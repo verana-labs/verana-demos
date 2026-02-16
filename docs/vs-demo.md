@@ -113,7 +113,7 @@ See `config/example-vs.env` for the complete list with defaults.
 Fork this repository and use the `deploy-vs-demo.yml` workflow:
 
 1. **Add secrets** to your fork:
-   - `OVH_KUBECONFIG` — base64-encoded kubeconfig for the target K8s cluster
+   - `OVH_KUBECONFIG` — kubeconfig for the target K8s cluster (plain text)
    - `VS_DEMO_MNEMONIC` — BIP-39 mnemonic for the veranad account
 
 2. **Trigger the workflow** from the Actions tab with your desired inputs (environment, schema URL, organization details, etc.).
