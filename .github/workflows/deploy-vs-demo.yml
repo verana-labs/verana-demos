@@ -3,157 +3,143 @@ name: Deploy VS Demo
 on:
   workflow_dispatch:
     inputs:
-      environment:
-        description: "Target environment"
+      step:
+        description: "Which step to run"
         required: true
         type: choice
         options:
-          - devnet
-          - testnet
-        default: testnet
-      custom_schema_url:
-        description: "URL of the JSON schema to register"
-        required: false
-        default: "https://verana-labs.github.io/verifiable-trust-spec/schemas/v4/example.json"
-      custom_schema_base_id:
-        description: "Base ID for the VTJSC"
-        required: false
-        default: "example"
-      enable_anoncreds:
-        description: "Create AnonCreds credential definition"
-        required: false
-        type: boolean
-        default: false
-      org_name:
-        description: "Organization name"
-        required: false
-        default: "Verana Example Organization"
-      org_country:
-        description: "ISO country code"
-        required: false
-        default: "CH"
-      org_logo_url:
-        description: "Organization logo URL"
-        required: false
-        default: "https://verana.io/logo.svg"
-      org_registry_id:
-        description: "Business registry ID"
-        required: false
-        default: "CH-CHE-123.456.789"
-      org_address:
-        description: "Physical address"
-        required: false
-        default: "Bahnhofstrasse 42, 8001 Zurich, Switzerland"
-      service_name:
-        description: "Service name"
-        required: false
-        default: "Example Verana Service"
-      service_type:
-        description: "Service type"
-        required: false
-        default: "IssuerService"
-      service_description:
-        description: "Service description"
-        required: false
-        default: "An example service using Verana, the Open Trust Layer"
-      service_logo_url:
-        description: "Service logo URL"
-        required: false
-        default: "https://verana.io/logo.svg"
-      service_terms:
-        description: "Terms and conditions URL"
-        required: false
-        default: "https://verana-labs.github.io/governance-docs/EGF/example.pdf"
-      service_privacy:
-        description: "Privacy policy URL"
-        required: false
-        default: "https://verana-labs.github.io/governance-docs/EGF/example.pdf"
-      egf_doc_url:
-        description: "Ecosystem Governance Framework URL"
-        required: false
-        default: "https://verana-labs.github.io/governance-docs/EGF/example.pdf"
-
-env:
-  NETWORK: ${{ inputs.environment }}
-  CUSTOM_SCHEMA_URL: ${{ inputs.custom_schema_url }}
-  CUSTOM_SCHEMA_BASE_ID: ${{ inputs.custom_schema_base_id }}
-  ENABLE_ANONCREDS: ${{ inputs.enable_anoncreds }}
-  ORG_NAME: ${{ inputs.org_name }}
-  ORG_COUNTRY: ${{ inputs.org_country }}
-  ORG_LOGO_URL: ${{ inputs.org_logo_url }}
-  ORG_REGISTRY_ID: ${{ inputs.org_registry_id }}
-  ORG_ADDRESS: ${{ inputs.org_address }}
-  SERVICE_NAME: ${{ inputs.service_name }}
-  SERVICE_TYPE: ${{ inputs.service_type }}
-  SERVICE_DESCRIPTION: ${{ inputs.service_description }}
-  SERVICE_LOGO_URL: ${{ inputs.service_logo_url }}
-  SERVICE_MIN_AGE: "0"
-  SERVICE_TERMS: ${{ inputs.service_terms }}
-  SERVICE_PRIVACY: ${{ inputs.service_privacy }}
-  EGF_DOC_URL: ${{ inputs.egf_doc_url }}
+          - deploy
+          - setup-part1
+          - setup-part2
+          - all
+        default: all
 
 jobs:
   deploy-vs:
-    name: Deploy VS Agent and configure Trust Registry
+    name: Deploy and configure VS Agent
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate branch and extract network
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          if [[ ! "$BRANCH" =~ ^vs/(testnet|devnet)- ]]; then
+            echo "::error::Branch must match vs/testnet-<name> or vs/devnet-<name> (current: $BRANCH)"
+            exit 1
+          fi
+          # Extract network and service name from branch: vs/testnet-my-service
+          SUFFIX="${BRANCH#vs/}"
+          NETWORK="${SUFFIX%%-*}"
+          VS_NAME="${SUFFIX#*-}"
+          echo "NETWORK=${NETWORK}" >> "$GITHUB_ENV"
+          echo "VS_NAME=${VS_NAME}" >> "$GITHUB_ENV"
+          echo "Branch: $BRANCH — Network: $NETWORK — Service: $VS_NAME"
+
+      - name: Load configuration
+        run: |
+          # Source config.env into GITHUB_ENV
+          set -a
+          source vs/config.env
+          set +a
+          # Export all variables to GITHUB_ENV
+          while IFS='=' read -r key value; do
+            # Skip comments and empty lines
+            [[ "$key" =~ ^#.*$ ]] && continue
+            [[ -z "$key" ]] && continue
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done < <(grep -E '^[A-Z_]+=' vs/config.env)
+
+      - name: Resolve deployment.yaml placeholders
+        run: |
+          # Substitute __NETWORK__ with the actual network from branch name
+          sed "s/__NETWORK__/${NETWORK}/g" vs/deployment.yaml > /tmp/deployment-resolved.yaml
+          echo "--- Resolved deployment.yaml ---"
+          cat /tmp/deployment-resolved.yaml
+
+      - name: Parse deployment.yaml
+        run: |
+          # Extract Helm metadata from resolved deployment.yaml
+          CHART_SOURCE=$(yq '.chartSource' /tmp/deployment-resolved.yaml)
+          CHART_VERSION=$(yq '.chartVersion' /tmp/deployment-resolved.yaml)
+          CHART_NAMESPACE=$(yq '.chartNamespace' /tmp/deployment-resolved.yaml)
+          RELEASE_NAME=$(yq '.name' /tmp/deployment-resolved.yaml)
+          INGRESS_HOST=$(yq '.ingress.host' /tmp/deployment-resolved.yaml)
+          echo "CHART_SOURCE=${CHART_SOURCE}" >> "$GITHUB_ENV"
+          echo "CHART_VERSION=${CHART_VERSION}" >> "$GITHUB_ENV"
+          echo "CHART_NAMESPACE=${CHART_NAMESPACE}" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=${RELEASE_NAME}" >> "$GITHUB_ENV"
+          echo "INGRESS_HOST=${INGRESS_HOST}" >> "$GITHUB_ENV"
+          echo "Chart: $CHART_SOURCE@$CHART_VERSION → $CHART_NAMESPACE/$RELEASE_NAME"
+
+      - name: Generate Helm values
+        run: |
+          # Strip Helm metadata fields, keep only chart values
+          yq 'del(.chartSource, .chartVersion, .chartNamespace)' /tmp/deployment-resolved.yaml > /tmp/helm-values.yaml
+          echo "--- Helm values ---"
+          cat /tmp/helm-values.yaml
+
       - name: Set up kubeconfig
         run: |
           mkdir -p ~/.kube
-          echo "${{ secrets.OVH_KUBECONFIG }}" > ~/.kube/config
-          chmod 600 ~/.kube/config
+          cat > ~/.kube/config <<'KUBEEOF'
+          ${{ secrets.OVH_KUBECONFIG }}
+          KUBEEOF
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.29.9'
 
       - name: Install veranad
         run: |
-          # Download veranad binary for Linux amd64
-          curl -sL "https://github.com/verana-labs/verana-blockchain/releases/latest/download/veranad-linux-amd64" -o /usr/local/bin/veranad
+          VERANAD_VERSION="v0.9.4"
+          curl -sfL "https://github.com/verana-labs/verana/releases/download/${VERANAD_VERSION}/veranad-linux-amd64" \
+            -o /usr/local/bin/veranad
           chmod +x /usr/local/bin/veranad
           veranad version
 
       - name: Import account from mnemonic
         run: |
-          echo "${{ secrets.VS_DEMO_MNEMONIC }}" | veranad keys add "$USER_ACC" --recover --keyring-backend test
-        env:
-          USER_ACC: vs-demo-admin
+          echo "${{ secrets.VS_DEMO_MNEMONIC }}" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
 
+      # -----------------------------------------------------------------------
+      # DEPLOY: Install/upgrade VS Agent via Helm
+      # -----------------------------------------------------------------------
       - name: Deploy VS Agent via Helm
+        if: inputs.step == 'deploy' || inputs.step == 'all'
         run: |
-          # Deploy the VS Agent chart to K8s
-          # The Helm chart creates the deployment, service, and ingress
-          helm upgrade --install vs-demo \
-            oci://registry-1.docker.io/veranalabs/vs-agent-chart \
-            --namespace vs-demo --create-namespace \
-            --set global.domain="${NETWORK}.verana.network" \
-            --set host="vs-demo" \
-            --set env.AGENT_PUBLIC_DID="did:webvh:vs-demo.${NETWORK}.verana.network" \
-            --set env.AGENT_LABEL="${SERVICE_NAME}" \
-            --set env.ENABLE_PUBLIC_API_SWAGGER="true" \
+          helm upgrade --install "$RELEASE_NAME" "$CHART_SOURCE" \
+            --version "$CHART_VERSION" \
+            --namespace "$CHART_NAMESPACE" --create-namespace \
+            --values /tmp/helm-values.yaml \
+            --set didcommLabel="${SERVICE_NAME}" \
+            --set didcommInvitationImageUrl="${SERVICE_LOGO_URL}" \
             --wait --timeout 300s
 
-      - name: Wait for VS Agent readiness
+      # -----------------------------------------------------------------------
+      # PORT-FORWARD: Access admin API via kubectl (same pattern as verana-deploy)
+      # -----------------------------------------------------------------------
+      - name: Port-forward VS Agent admin API
+        if: inputs.step == 'setup-part1' || inputs.step == 'setup-part2' || inputs.step == 'all'
         run: |
-          ADMIN_URL="https://admin-vs-demo.${NETWORK}.verana.network"
-          echo "Waiting for VS Agent at ${ADMIN_URL}..."
-          for i in $(seq 1 60); do
-            if curl -sf "${ADMIN_URL}/v1/agent" > /dev/null 2>&1; then
-              echo "VS Agent is ready"
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "VS Agent did not become ready in time"
-          exit 1
+          kubectl port-forward -n "$CHART_NAMESPACE" "svc/$RELEASE_NAME" 3000:3000 &
+          echo "PF_PID=$!" >> "$GITHUB_ENV"
+          sleep 5
+          curl -sf http://localhost:3000/v1/agent > /dev/null || {
+            echo "Port-forward failed — is the $RELEASE_NAME pod running in $CHART_NAMESPACE?"
+            exit 1
+          }
+          echo "Port-forward established"
 
-      - name: Run Part 1 — Deploy VS and obtain ECS credentials
+      # -----------------------------------------------------------------------
+      # PART 1: Obtain ECS credentials (Organization + Service)
+      # -----------------------------------------------------------------------
+      - name: "Setup Part 1: Obtain ECS credentials"
+        if: inputs.step == 'setup-part1' || inputs.step == 'all'
         run: |
-          export VS_AGENT_ADMIN_PORT=""
-          export ADMIN_API="https://admin-vs-demo.${NETWORK}.verana.network"
-          export ECS_TR_ADMIN_API="https://admin-ecs-trust-registry.${NETWORK}.verana.network"
-          # In K8s mode, the agent is already running; skip Docker/ngrok steps
-          # Source common helpers and run the on-chain + API steps directly
+          export ADMIN_API="http://localhost:3000"
           source scripts/vs-demo/common.sh
           set_network_vars "$NETWORK"
 
@@ -161,6 +147,7 @@ jobs:
           AGENT_INFO=$(curl -sf "${ADMIN_API}/v1/agent")
           AGENT_DID=$(echo "$AGENT_INFO" | jq -r '.publicDid')
           echo "AGENT_DID=${AGENT_DID}" >> "$GITHUB_ENV"
+          ok "Agent DID: $AGENT_DID"
 
           # Clean up self-generated items
           cleanup_self_generated "$ADMIN_API"
@@ -209,29 +196,42 @@ jobs:
             '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
 
           issue_and_link "$ADMIN_API" "service" "$CHAIN_ID" "$CS_SERVICE_ID" "$AGENT_DID" "$SERVICE_CLAIMS"
-        env:
-          USER_ACC: vs-demo-admin
 
-      - name: Run Part 2 — Create Trust Registry
+      # -----------------------------------------------------------------------
+      # PART 2: Create Trust Registry with custom schema
+      # -----------------------------------------------------------------------
+      - name: "Setup Part 2: Create Trust Registry"
+        if: inputs.step == 'setup-part2' || inputs.step == 'all'
         run: |
-          export ADMIN_API="https://admin-vs-demo.${NETWORK}.verana.network"
+          export ADMIN_API="http://localhost:3000"
           source scripts/vs-demo/common.sh
           set_network_vars "$NETWORK"
 
-          AGENT_DID="${AGENT_DID}"
+          # Get agent DID (may already be in GITHUB_ENV from Part 1)
+          if [ -z "${AGENT_DID:-}" ]; then
+            AGENT_DID=$(curl -sf "${ADMIN_API}/v1/agent" | jq -r '.publicDid')
+          fi
 
-          # Compute EGF digest at runtime
+          # Compute EGF digest
           EGF_DOC_DIGEST=$(compute_sri_digest "$EGF_DOC_URL")
-          echo "EGF digest: $EGF_DOC_DIGEST"
+          ok "EGF digest: $EGF_DOC_DIGEST"
+
+          # Derive registry URL from ingress host
+          TR_REGISTRY_URL="https://${INGRESS_HOST}"
 
           # Create Trust Registry
           TRUST_REG_ID=$(submit_tx "create_trust_registry" "trust_registry_id" \
             veranad tx tr create-trust-registry \
             "$AGENT_DID" "en" "$EGF_DOC_URL" "$EGF_DOC_DIGEST" \
-            --aka "https://vs-demo.${NETWORK}.verana.network")
+            --aka "$TR_REGISTRY_URL")
 
-          # Create credential schema
-          SCHEMA_JSON=$(download_schema "$CUSTOM_SCHEMA_URL")
+          # Create credential schema from vs/schema.json
+          if [ -n "${CUSTOM_SCHEMA_URL:-}" ]; then
+            SCHEMA_JSON=$(download_schema "$CUSTOM_SCHEMA_URL")
+          else
+            SCHEMA_JSON=$(jq -c '.' vs/schema.json)
+          fi
+
           CUSTOM_SCHEMA_ID=$(submit_tx "create_credential_schema" "credential_schema_id" \
             veranad tx cs create-credential-schema "$TRUST_REG_ID" "$SCHEMA_JSON" \
             --issuer-grantor-validation-validity-period '{"value":0}' \
@@ -281,5 +281,11 @@ jobs:
           fi
 
           echo "Trust Registry setup complete: TR=$TRUST_REG_ID Schema=$CUSTOM_SCHEMA_ID"
-        env:
-          USER_ACC: vs-demo-admin
+
+      # -----------------------------------------------------------------------
+      # CLEANUP
+      # -----------------------------------------------------------------------
+      - name: Cleanup port-forward
+        if: always()
+        run: |
+          kill ${{ env.PF_PID }} 2>/dev/null || true

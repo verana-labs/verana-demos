@@ -1,0 +1,36 @@
+{
+  "$id": "https://verana-labs.github.io/verifiable-trust-spec/schemas/v4/example.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Example Credential",
+  "description": "An example credential schema for demonstrating Verana Trust Registry capabilities.",
+  "type": "object",
+  "properties": {
+    "credentialSubject": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uri"
+        },
+        "firstName": {
+          "type": "string",
+          "description": "The first name of the subject"
+        },
+        "lastName": {
+          "type": "string",
+          "description": "The last name of the subject"
+        },
+        "countryOfResidence": {
+          "type": "string",
+          "description": "The country of residence (ISO 3166-1 alpha-2)"
+        }
+      },
+      "required": [
+        "id",
+        "firstName",
+        "lastName",
+        "countryOfResidence"
+      ]
+    }
+  }
+}

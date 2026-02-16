@@ -1,0 +1,57 @@
+# VS Agent deployment — Helm chart values
+# Same format as verana-deploy charts (e.g., ecs-trust-registry.yaml).
+#
+# To deploy your own service:
+#   1. Create a branch: vs/testnet-<name> or vs/devnet-<name>
+#   2. Edit this file with your service-specific values
+#   3. Run the workflow from GitHub Actions
+#
+# Network (testnet/devnet) is derived from the branch name.
+# The workflow substitutes __NETWORK__ placeholders at deploy time.
+chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
+chartVersion: v1.7.3-dev.3
+
+# __NETWORK__ is replaced by the workflow with testnet or devnet
+chartNamespace: vna-__NETWORK__-1
+
+global:
+  domain: __NETWORK__.verana.network
+
+name: example-vs
+replicas: 1
+
+adminPort: 3000
+didcommPort: 3001
+eventsBaseUrl: "https://example-vs.__NETWORK__.verana.network"
+publicDidMethod: "webvh"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+ingress:
+  host: "example-vs.__NETWORK__.verana.network"
+  tlsSecret: "public.example-vs.__NETWORK__.verana.network-cert"
+  public:
+    enableCors: true
+  private:
+    enableCors: true
+    whitelistSourceRange: ""
+    tlsSecret: ""
+    host: ""
+
+extraEnv:
+  - name: ENABLE_PUBLIC_API_SWAGGER
+    value: "true"
+  - name: AGENT_LOG_LEVEL
+    value: "3"
+  - name: USE_CORS
+    value: "true"
+
+storage:
+  size: 1Gi
+  storageClassName: csi-cinder-high-speed
