@@ -1,0 +1,274 @@
+name: Deploy VS Demo
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - devnet
+          - testnet
+        default: testnet
+      custom_schema_url:
+        description: "URL of the JSON schema to register"
+        required: false
+        default: "https://verana-labs.github.io/verifiable-trust-spec/schemas/v4/example.json"
+      custom_schema_base_id:
+        description: "Base ID for the VTJSC"
+        required: false
+        default: "example"
+      enable_anoncreds:
+        description: "Create AnonCreds credential definition"
+        required: false
+        type: boolean
+        default: false
+      org_name:
+        description: "Organization name"
+        required: true
+      org_country:
+        description: "ISO country code"
+        required: true
+      org_logo_url:
+        description: "Organization logo URL"
+        required: true
+      org_registry_id:
+        description: "Business registry ID"
+        required: true
+      org_address:
+        description: "Physical address"
+        required: true
+      service_name:
+        description: "Service name"
+        required: true
+      service_type:
+        description: "Service type"
+        required: true
+        default: "CredentialIssuer"
+      service_description:
+        description: "Service description"
+        required: true
+      service_logo_url:
+        description: "Service logo URL"
+        required: true
+      service_terms:
+        description: "Terms and conditions URL"
+        required: true
+      service_privacy:
+        description: "Privacy policy URL"
+        required: true
+      egf_doc_url:
+        description: "Ecosystem Governance Framework URL"
+        required: true
+      egf_doc_digest:
+        description: "SHA-384 SRI digest of the EGF document"
+        required: true
+
+env:
+  NETWORK: ${{ inputs.environment }}
+  CUSTOM_SCHEMA_URL: ${{ inputs.custom_schema_url }}
+  CUSTOM_SCHEMA_BASE_ID: ${{ inputs.custom_schema_base_id }}
+  ENABLE_ANONCREDS: ${{ inputs.enable_anoncreds }}
+  ORG_NAME: ${{ inputs.org_name }}
+  ORG_COUNTRY: ${{ inputs.org_country }}
+  ORG_LOGO_URL: ${{ inputs.org_logo_url }}
+  ORG_REGISTRY_ID: ${{ inputs.org_registry_id }}
+  ORG_ADDRESS: ${{ inputs.org_address }}
+  SERVICE_NAME: ${{ inputs.service_name }}
+  SERVICE_TYPE: ${{ inputs.service_type }}
+  SERVICE_DESCRIPTION: ${{ inputs.service_description }}
+  SERVICE_LOGO_URL: ${{ inputs.service_logo_url }}
+  SERVICE_MIN_AGE: "0"
+  SERVICE_TERMS: ${{ inputs.service_terms }}
+  SERVICE_PRIVACY: ${{ inputs.service_privacy }}
+  EGF_DOC_URL: ${{ inputs.egf_doc_url }}
+  EGF_DOC_DIGEST: ${{ inputs.egf_doc_digest }}
+
+jobs:
+  deploy-vs:
+    name: Deploy VS Agent and configure Trust Registry
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.OVH_KUBECONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Install veranad
+        run: |
+          # Download veranad binary for Linux amd64
+          curl -sL "https://github.com/verana-labs/verana-blockchain/releases/latest/download/veranad-linux-amd64" -o /usr/local/bin/veranad
+          chmod +x /usr/local/bin/veranad
+          veranad version
+
+      - name: Import account from mnemonic
+        run: |
+          echo "${{ secrets.VS_DEMO_MNEMONIC }}" | veranad keys add "$USER_ACC" --recover --keyring-backend test
+        env:
+          USER_ACC: vs-demo-admin
+
+      - name: Deploy VS Agent via Helm
+        run: |
+          # Deploy the VS Agent chart to K8s
+          # The Helm chart creates the deployment, service, and ingress
+          helm upgrade --install vs-demo \
+            oci://registry-1.docker.io/veranalabs/vs-agent-chart \
+            --namespace vs-demo --create-namespace \
+            --set global.domain="${NETWORK}.verana.network" \
+            --set host="vs-demo" \
+            --set env.AGENT_PUBLIC_DID="did:webvh:vs-demo.${NETWORK}.verana.network" \
+            --set env.AGENT_LABEL="${SERVICE_NAME}" \
+            --set env.ENABLE_PUBLIC_API_SWAGGER="true" \
+            --wait --timeout 300s
+
+      - name: Wait for VS Agent readiness
+        run: |
+          ADMIN_URL="https://admin-vs-demo.${NETWORK}.verana.network"
+          echo "Waiting for VS Agent at ${ADMIN_URL}..."
+          for i in $(seq 1 60); do
+            if curl -sf "${ADMIN_URL}/v1/agent" > /dev/null 2>&1; then
+              echo "VS Agent is ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "VS Agent did not become ready in time"
+          exit 1
+
+      - name: Run Part 1 — Deploy VS and obtain ECS credentials
+        run: |
+          export VS_AGENT_ADMIN_PORT=""
+          export ADMIN_API="https://admin-vs-demo.${NETWORK}.verana.network"
+          export ECS_TR_ADMIN_API="https://admin-ecs-trust-registry.${NETWORK}.verana.network"
+          # In K8s mode, the agent is already running; skip Docker/ngrok steps
+          # Source common helpers and run the on-chain + API steps directly
+          source scripts/vs-demo/common.sh
+          set_network_vars "$NETWORK"
+
+          # Get agent DID
+          AGENT_INFO=$(curl -sf "${ADMIN_API}/v1/agent")
+          AGENT_DID=$(echo "$AGENT_INFO" | jq -r '.publicDid')
+          echo "AGENT_DID=${AGENT_DID}" >> "$GITHUB_ENV"
+
+          # Clean up self-generated items
+          cleanup_self_generated "$ADMIN_API"
+
+          # Obtain Organization credential from ECS TR
+          ORG_LOGO_B64=$(curl -sfL "$ORG_LOGO_URL" | base64 -w 0)
+          SERVICE_LOGO_B64=$(curl -sfL "$SERVICE_LOGO_URL" | base64 -w 0)
+
+          ORG_JSC_URL=$(curl -sf "${ECS_TR_ADMIN_API}/v1/vt/json-schema-credentials" \
+            | jq -r '.data[] | select(.credential.type[]? == "VerifiableTrustJsonSchemaCredential") | select(.credential.credentialSubject.jsonSchema."$ref" | test("org")) | .credential.id' \
+            | head -1)
+
+          ORG_CLAIMS=$(jq -n \
+            --arg id "$AGENT_DID" \
+            --arg name "$ORG_NAME" \
+            --arg logo "$ORG_LOGO_B64" \
+            --arg rid "$ORG_REGISTRY_ID" \
+            --arg addr "$ORG_ADDRESS" \
+            --arg cc "$ORG_COUNTRY" \
+            '{id: $id, name: $name, logo: $logo, registryId: $rid, address: $addr, countryCode: $cc}')
+
+          issue_remote_and_link "$ECS_TR_ADMIN_API" "$ADMIN_API" "organization" "$ORG_JSC_URL" "$AGENT_DID" "$ORG_CLAIMS"
+
+          # Self-create ISSUER permission for Service schema
+          EFFECTIVE_FROM=$(future_timestamp 15)
+          ISSUER_PERM_SERVICE=$(submit_tx "create_permission" "permission_id" \
+            veranad tx perm create-perm "$CS_SERVICE_ID" issuer "$AGENT_DID" \
+            --effective-from "$EFFECTIVE_FROM")
+          sleep 21
+
+          # Create Service VTJSC
+          curl -sf -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
+            -H 'Content-Type: application/json' \
+            -d "{\"schemaBaseId\": \"service\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CS_SERVICE_ID}\"}"
+
+          # Self-issue Service credential
+          SERVICE_CLAIMS=$(jq -n \
+            --arg id "$AGENT_DID" \
+            --arg name "$SERVICE_NAME" \
+            --arg type "$SERVICE_TYPE" \
+            --arg desc "$SERVICE_DESCRIPTION" \
+            --arg logo "$SERVICE_LOGO_B64" \
+            --argjson age "$SERVICE_MIN_AGE" \
+            --arg terms "$SERVICE_TERMS" \
+            --arg privacy "$SERVICE_PRIVACY" \
+            '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
+
+          issue_and_link "$ADMIN_API" "service" "$CHAIN_ID" "$CS_SERVICE_ID" "$AGENT_DID" "$SERVICE_CLAIMS"
+        env:
+          USER_ACC: vs-demo-admin
+
+      - name: Run Part 2 — Create Trust Registry
+        run: |
+          export ADMIN_API="https://admin-vs-demo.${NETWORK}.verana.network"
+          source scripts/vs-demo/common.sh
+          set_network_vars "$NETWORK"
+
+          AGENT_DID="${AGENT_DID}"
+
+          # Create Trust Registry
+          TRUST_REG_ID=$(submit_tx "create_trust_registry" "trust_registry_id" \
+            veranad tx tr create-trust-registry \
+            "$AGENT_DID" "en" "$EGF_DOC_URL" "$EGF_DOC_DIGEST" \
+            --aka "https://vs-demo.${NETWORK}.verana.network")
+
+          # Create credential schema
+          SCHEMA_JSON=$(download_schema "$CUSTOM_SCHEMA_URL")
+          CUSTOM_SCHEMA_ID=$(submit_tx "create_credential_schema" "credential_schema_id" \
+            veranad tx cs create-credential-schema "$TRUST_REG_ID" "$SCHEMA_JSON" \
+            --issuer-grantor-validation-validity-period '{"value":0}' \
+            --verifier-grantor-validation-validity-period '{"value":0}' \
+            --issuer-validation-validity-period '{"value":0}' \
+            --verifier-validation-validity-period '{"value":0}' \
+            --holder-validation-validity-period '{"value":0}' \
+            3 1)
+
+          # Create root permission
+          EFFECTIVE_FROM=$(future_timestamp 15)
+          ROOT_PERM_ID=$(submit_tx "create_root_permission" "root_permission_id" \
+            veranad tx perm create-root-perm \
+            "$CUSTOM_SCHEMA_ID" "$AGENT_DID" 0 0 0 \
+            --effective-from "$EFFECTIVE_FROM")
+          sleep 21
+
+          # Obtain ISSUER permission via VP flow
+          START_RESULT=$(veranad tx perm start-perm-vp \
+            issuer "$ROOT_PERM_ID" --did "$AGENT_DID" \
+            --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+            --fees "$FEES" --gas auto --node "$NODE_RPC" \
+            --output json -y 2>&1 | extract_tx_json)
+          START_TX_HASH=$(echo "$START_RESULT" | jq -r '.txhash')
+          sleep 8
+          ISSUER_PERM_ID=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id")
+
+          veranad tx perm set-perm-vp-validated "$ISSUER_PERM_ID" \
+            --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+            --fees "$FEES" --gas auto --node "$NODE_RPC" \
+            --output json -y 2>&1
+          sleep 6
+
+          # Create VTJSC
+          curl -sf -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
+            -H 'Content-Type: application/json' \
+            -d "{\"schemaBaseId\": \"${CUSTOM_SCHEMA_BASE_ID}\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}"
+
+          # Optional: AnonCreds
+          if [ "$ENABLE_ANONCREDS" = "true" ]; then
+            VTJSC_VPR_REF="vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}"
+            VTJSC_CRED_ID=$(curl -sf "${ADMIN_API}/v1/vt/json-schema-credentials" \
+              | jq -r --arg sid "$VTJSC_VPR_REF" '.data[] | select(.schemaId == $sid) | .credential.id')
+            curl -sf -X POST "${ADMIN_API}/v1/credential-types" \
+              -H 'Content-Type: application/json' \
+              -d "{\"name\": \"${CUSTOM_SCHEMA_BASE_ID}\", \"version\": \"1.0\", \"relatedJsonSchemaCredentialId\": \"${VTJSC_CRED_ID}\", \"supportRevocation\": false}"
+          fi
+
+          echo "Trust Registry setup complete: TR=$TRUST_REG_ID Schema=$CUSTOM_SCHEMA_ID"
+        env:
+          USER_ACC: vs-demo-admin
