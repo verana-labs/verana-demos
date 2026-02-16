@@ -64,9 +64,6 @@ SERVICE_MIN_AGE="${SERVICE_MIN_AGE:-0}"
 SERVICE_TERMS="${SERVICE_TERMS:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
 SERVICE_PRIVACY="${SERVICE_PRIVACY:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
 
-# ECS IDs file (contains schema IDs from the ECS Trust Registry setup)
-ECS_IDS_FILE="${ECS_IDS_FILE:-}"
-
 # Output file
 OUTPUT_FILE="${OUTPUT_FILE:-vs-demo-ids.env}"
 
@@ -80,18 +77,25 @@ log "Network: $NETWORK (chain: $CHAIN_ID)"
 ADMIN_API="http://localhost:${VS_AGENT_ADMIN_PORT}"
 
 # ---------------------------------------------------------------------------
-# Load ECS IDs if provided
+# Discover ECS Service schema ID from the ECS Trust Registry
 # ---------------------------------------------------------------------------
 
-if [ -n "$ECS_IDS_FILE" ] && [ -f "$ECS_IDS_FILE" ]; then
-  log "Loading ECS IDs from $ECS_IDS_FILE"
-  # shellcheck disable=SC1090
-  source "$ECS_IDS_FILE"
-  ok "ECS IDs loaded"
+if [ -n "${CS_SERVICE_ID:-}" ]; then
+  ok "Using provided CS_SERVICE_ID=$CS_SERVICE_ID"
+else
+  CS_SERVICE_ID=$(discover_ecs_schema_id "$ECS_TR_PUBLIC_URL" "service")
+  if [ -z "$CS_SERVICE_ID" ]; then
+    err "Could not auto-discover Service schema ID from ECS TR"
+    exit 1
+  fi
 fi
 
-# The Service schema ID must be known (from ECS TR setup)
-CS_SERVICE_ID="${CS_SERVICE_ID:?CS_SERVICE_ID is required (set it or provide ECS_IDS_FILE)}"
+# Discover the active root permission for the Service schema
+ROOT_PERM_SERVICE=$(discover_active_root_perm "$CS_SERVICE_ID")
+if [ -z "$ROOT_PERM_SERVICE" ]; then
+  err "No active root permission for Service schema $CS_SERVICE_ID"
+  exit 1
+fi
 
 # =============================================================================
 # STEP 1: Deploy VS Agent with ngrok

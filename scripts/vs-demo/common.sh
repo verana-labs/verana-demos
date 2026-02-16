@@ -176,6 +176,102 @@ compute_sri_digest() {
 }
 
 # ---------------------------------------------------------------------------
+# ECS Trust Registry discovery helpers
+# ---------------------------------------------------------------------------
+
+# Discover a schema ID from the ECS Trust Registry by resolving its DID document
+# and fetching the corresponding VTJSC.
+# Usage: discover_ecs_schema_id <ecs_public_url> <schema_pattern>
+# Example: discover_ecs_schema_id "$ECS_TR_PUBLIC_URL" "service"
+# Returns: the numeric VPR schema ID on stdout
+discover_ecs_schema_id() {
+  local ecs_public_url=$1
+  local schema_pattern=$2
+
+  log "Resolving ECS TR DID document for '$schema_pattern' schema..."
+
+  # Fetch the DID document from the ECS TR's public URL
+  local did_doc
+  did_doc=$(curl -sf "${ecs_public_url}/.well-known/did.json")
+  if [ -z "$did_doc" ]; then
+    err "Failed to fetch DID document from ${ecs_public_url}/.well-known/did.json"
+    return 1
+  fi
+
+  # Find the VTJSC service entry matching the schema pattern
+  local vtjsc_url
+  vtjsc_url=$(echo "$did_doc" | jq -r --arg pat "$schema_pattern" '
+    .service[]? | select(.id | test($pat)) | .serviceEndpoint' | head -1)
+
+  if [ -z "$vtjsc_url" ]; then
+    err "No VTJSC service entry matching '$schema_pattern' in DID document"
+    return 1
+  fi
+  ok "VTJSC endpoint: $vtjsc_url"
+
+  # Fetch the VTJSC credential
+  local vtjsc
+  vtjsc=$(curl -sf "$vtjsc_url")
+  if [ -z "$vtjsc" ]; then
+    err "Failed to fetch VTJSC from $vtjsc_url"
+    return 1
+  fi
+
+  # Extract the VPR schema ref from credentialSubject.jsonSchema.$ref
+  # e.g. "vpr:verana:vna-testnet-1/cs/v1/js/99"
+  local schema_ref
+  schema_ref=$(echo "$vtjsc" | jq -r '.credentialSubject.jsonSchema."$ref" // empty')
+  if [ -z "$schema_ref" ]; then
+    err "Could not extract jsonSchema.\$ref from VTJSC"
+    return 1
+  fi
+
+  # Extract numeric schema ID from the end of the VPR ref
+  local schema_id
+  schema_id=$(echo "$schema_ref" | grep -oE '[0-9]+$')
+  if [ -z "$schema_id" ]; then
+    err "Could not parse schema ID from ref: $schema_ref"
+    return 1
+  fi
+
+  ok "Schema '$schema_pattern' → ID: $schema_id (ref: $schema_ref)"
+  echo "$schema_id"
+}
+
+# Discover the active root permission for a given credential schema.
+# Usage: discover_active_root_perm <schema_id>
+# Returns: the root permission ID on stdout
+discover_active_root_perm() {
+  local schema_id=$1
+
+  log "Discovering active root permission for schema $schema_id..."
+
+  local root_perms
+  root_perms=$(veranad q perm list-root-perms "$schema_id" \
+    --node "$NODE_RPC" --output json 2>/dev/null)
+
+  if [ -z "$root_perms" ]; then
+    err "Failed to query root permissions for schema $schema_id"
+    return 1
+  fi
+
+  # Find an active root permission (status = active / not expired)
+  local root_perm_id
+  root_perm_id=$(echo "$root_perms" | jq -r '
+    .root_permissions[]? |
+    select(.status == "active" or .status == "ACTIVE" or .status == "ROOT_PERMISSION_STATUS_ACTIVE") |
+    .id' | head -1)
+
+  if [ -z "$root_perm_id" ]; then
+    err "No active root permission found for schema $schema_id"
+    return 1
+  fi
+
+  ok "Active root permission: $root_perm_id"
+  echo "$root_perm_id"
+}
+
+# ---------------------------------------------------------------------------
 # Credential helpers
 # ---------------------------------------------------------------------------
 
