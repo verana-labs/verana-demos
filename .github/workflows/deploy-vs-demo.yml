@@ -26,44 +26,52 @@ on:
         default: false
       org_name:
         description: "Organization name"
-        required: true
+        required: false
+        default: "Verana Example Organization"
       org_country:
         description: "ISO country code"
-        required: true
+        required: false
+        default: "CH"
       org_logo_url:
         description: "Organization logo URL"
-        required: true
+        required: false
+        default: "https://verana.io/logo.svg"
       org_registry_id:
         description: "Business registry ID"
-        required: true
+        required: false
+        default: "CH-CHE-123.456.789"
       org_address:
         description: "Physical address"
-        required: true
+        required: false
+        default: "Bahnhofstrasse 42, 8001 Zurich, Switzerland"
       service_name:
         description: "Service name"
-        required: true
+        required: false
+        default: "Example Verana Service"
       service_type:
         description: "Service type"
-        required: true
-        default: "CredentialIssuer"
+        required: false
+        default: "IssuerService"
       service_description:
         description: "Service description"
-        required: true
+        required: false
+        default: "An example service using Verana, the Open Trust Layer"
       service_logo_url:
         description: "Service logo URL"
-        required: true
+        required: false
+        default: "https://verana.io/logo.svg"
       service_terms:
         description: "Terms and conditions URL"
-        required: true
+        required: false
+        default: "https://verana-labs.github.io/governance-docs/EGF/example.pdf"
       service_privacy:
         description: "Privacy policy URL"
-        required: true
+        required: false
+        default: "https://verana-labs.github.io/governance-docs/EGF/example.pdf"
       egf_doc_url:
         description: "Ecosystem Governance Framework URL"
-        required: true
-      egf_doc_digest:
-        description: "SHA-384 SRI digest of the EGF document"
-        required: true
+        required: false
+        default: "https://verana-labs.github.io/governance-docs/EGF/example.pdf"
 
 env:
   NETWORK: ${{ inputs.environment }}
@@ -83,7 +91,6 @@ env:
   SERVICE_TERMS: ${{ inputs.service_terms }}
   SERVICE_PRIVACY: ${{ inputs.service_privacy }}
   EGF_DOC_URL: ${{ inputs.egf_doc_url }}
-  EGF_DOC_DIGEST: ${{ inputs.egf_doc_digest }}
 
 jobs:
   deploy-vs:
@@ -212,6 +219,10 @@ jobs:
           set_network_vars "$NETWORK"
 
           AGENT_DID="${AGENT_DID}"
+
+          # Compute EGF digest at runtime
+          EGF_DOC_DIGEST=$(compute_sri_digest "$EGF_DOC_URL")
+          echo "EGF digest: $EGF_DOC_DIGEST"
 
           # Create Trust Registry
           TRUST_REG_ID=$(submit_tx "create_trust_registry" "trust_registry_id" \

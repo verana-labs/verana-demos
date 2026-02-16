@@ -161,6 +161,20 @@ download_schema() {
   curl -sf "$1" | jq -c '.'
 }
 
+# Compute SHA-384 SRI digest of a URL's content
+# Usage: compute_sri_digest <url>
+# Returns: sha384-<base64_hash>
+compute_sri_digest() {
+  local url=$1
+  local hash
+  hash=$(curl -sfL "$url" | openssl dgst -sha384 -binary | openssl base64 -A)
+  if [ -z "$hash" ]; then
+    err "Failed to compute SRI digest for $url"
+    return 1
+  fi
+  echo "sha384-${hash}"
+}
+
 # ---------------------------------------------------------------------------
 # Credential helpers
 # ---------------------------------------------------------------------------
