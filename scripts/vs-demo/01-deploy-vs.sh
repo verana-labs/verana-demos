@@ -48,21 +48,21 @@ VS_AGENT_DATA_DIR="${VS_AGENT_DATA_DIR:-$(pwd)/vs-agent-demo-data}"
 # CLI account
 USER_ACC="${USER_ACC:-vs-demo-admin}"
 
-# Organization details (required — must be set by user)
-ORG_NAME="${ORG_NAME:?ORG_NAME is required}"
-ORG_COUNTRY="${ORG_COUNTRY:?ORG_COUNTRY is required}"
-ORG_LOGO_URL="${ORG_LOGO_URL:?ORG_LOGO_URL is required}"
-ORG_REGISTRY_ID="${ORG_REGISTRY_ID:?ORG_REGISTRY_ID is required}"
-ORG_ADDRESS="${ORG_ADDRESS:?ORG_ADDRESS is required}"
+# Organization details
+ORG_NAME="${ORG_NAME:-Verana Example Organization}"
+ORG_COUNTRY="${ORG_COUNTRY:-CH}"
+ORG_LOGO_URL="${ORG_LOGO_URL:-https://verana.io/logo.svg}"
+ORG_REGISTRY_ID="${ORG_REGISTRY_ID:-CH-CHE-123.456.789}"
+ORG_ADDRESS="${ORG_ADDRESS:-Bahnhofstrasse 42, 8001 Zurich, Switzerland}"
 
-# Service details (required — must be set by user)
-SERVICE_NAME="${SERVICE_NAME:?SERVICE_NAME is required}"
-SERVICE_TYPE="${SERVICE_TYPE:?SERVICE_TYPE is required}"
-SERVICE_DESCRIPTION="${SERVICE_DESCRIPTION:?SERVICE_DESCRIPTION is required}"
-SERVICE_LOGO_URL="${SERVICE_LOGO_URL:?SERVICE_LOGO_URL is required}"
+# Service details
+SERVICE_NAME="${SERVICE_NAME:-Example Verana Service}"
+SERVICE_TYPE="${SERVICE_TYPE:-IssuerService}"
+SERVICE_DESCRIPTION="${SERVICE_DESCRIPTION:-An example service using Verana, the Open Trust Layer}"
+SERVICE_LOGO_URL="${SERVICE_LOGO_URL:-https://verana.io/logo.svg}"
 SERVICE_MIN_AGE="${SERVICE_MIN_AGE:-0}"
-SERVICE_TERMS="${SERVICE_TERMS:?SERVICE_TERMS is required}"
-SERVICE_PRIVACY="${SERVICE_PRIVACY:?SERVICE_PRIVACY is required}"
+SERVICE_TERMS="${SERVICE_TERMS:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
+SERVICE_PRIVACY="${SERVICE_PRIVACY:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
 
 # ECS IDs file (contains schema IDs from the ECS Trust Registry setup)
 ECS_IDS_FILE="${ECS_IDS_FILE:-}"

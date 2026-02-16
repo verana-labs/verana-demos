@@ -44,8 +44,8 @@ CUSTOM_SCHEMA_BASE_ID="${CUSTOM_SCHEMA_BASE_ID:-example}"
 # Trust Registry configuration
 TR_REGISTRY_URL="${TR_REGISTRY_URL:-}"
 EGF_LANGUAGE="${EGF_LANGUAGE:-en}"
-EGF_DOC_URL="${EGF_DOC_URL:?EGF_DOC_URL is required}"
-EGF_DOC_DIGEST="${EGF_DOC_DIGEST:?EGF_DOC_DIGEST is required}"
+EGF_DOC_URL="${EGF_DOC_URL:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
+EGF_DOC_DIGEST="${EGF_DOC_DIGEST:-}"
 
 # Trust fees (0 for devnet/testnet)
 VALIDATION_FEES="${VALIDATION_FEES:-0}"
@@ -98,6 +98,13 @@ TR_REGISTRY_URL="${TR_REGISTRY_URL:-${NGROK_URL:-}}"
 # =============================================================================
 
 log "Step 1: Create Trust Registry on-chain"
+
+# Auto-calculate EGF digest if not provided
+if [ -z "$EGF_DOC_DIGEST" ]; then
+  log "Computing SRI digest of EGF document ($EGF_DOC_URL)..."
+  EGF_DOC_DIGEST=$(compute_sri_digest "$EGF_DOC_URL")
+  ok "EGF digest: $EGF_DOC_DIGEST"
+fi
 
 TRUST_REG_ID=$(submit_tx "create_trust_registry" "trust_registry_id" \
   veranad tx tr create-trust-registry \
