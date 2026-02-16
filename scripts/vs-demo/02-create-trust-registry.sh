@@ -38,7 +38,9 @@ NETWORK="${NETWORK:-testnet}"
 VS_IDS_FILE="${VS_IDS_FILE:-vs-demo-ids.env}"
 
 # Custom schema configuration
-CUSTOM_SCHEMA_URL="${CUSTOM_SCHEMA_URL:-https://verana-labs.github.io/verifiable-trust-spec/schemas/v4/example.json}"
+# If CUSTOM_SCHEMA_URL is set, download from URL. Otherwise, read vs/schema.json.
+CUSTOM_SCHEMA_URL="${CUSTOM_SCHEMA_URL:-}"
+CUSTOM_SCHEMA_FILE="${CUSTOM_SCHEMA_FILE:-${SCRIPT_DIR}/../../vs/schema.json}"
 CUSTOM_SCHEMA_BASE_ID="${CUSTOM_SCHEMA_BASE_ID:-example}"
 
 # Trust Registry configuration
@@ -119,13 +121,22 @@ ok "Trust Registry created with ID: $TRUST_REG_ID"
 
 log "Step 2: Create credential schema"
 
-log "Downloading schema from $CUSTOM_SCHEMA_URL..."
-SCHEMA_JSON=$(download_schema "$CUSTOM_SCHEMA_URL")
-if [ -z "$SCHEMA_JSON" ]; then
-  err "Failed to download schema from $CUSTOM_SCHEMA_URL"
+if [ -n "$CUSTOM_SCHEMA_URL" ]; then
+  log "Downloading schema from $CUSTOM_SCHEMA_URL..."
+  SCHEMA_JSON=$(download_schema "$CUSTOM_SCHEMA_URL")
+  if [ -z "$SCHEMA_JSON" ]; then
+    err "Failed to download schema from $CUSTOM_SCHEMA_URL"
+    exit 1
+  fi
+  ok "Schema downloaded from URL"
+elif [ -f "$CUSTOM_SCHEMA_FILE" ]; then
+  log "Reading schema from $CUSTOM_SCHEMA_FILE..."
+  SCHEMA_JSON=$(jq -c '.' "$CUSTOM_SCHEMA_FILE")
+  ok "Schema loaded from file"
+else
+  err "No schema found. Set CUSTOM_SCHEMA_URL or provide vs/schema.json"
   exit 1
 fi
-ok "Schema downloaded"
 
 # issuer_mode=ECOSYSTEM (3), verifier_mode=OPEN (1)
 log "Creating schema (issuer_mode=ECOSYSTEM, verifier_mode=OPEN)..."
