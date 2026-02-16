@@ -79,8 +79,8 @@ jobs:
           yq 'del(.chartSource, .chartVersion, .chartNamespace)' /tmp/deployment-resolved.yaml > /tmp/helm-values.yaml
           # Inject didcommLabel and didcommInvitationImageUrl from config.env
           # (using yq instead of --set to avoid YAML parse errors with spaces)
-          yq -i ".didcommLabel = \"${SERVICE_NAME}\"" /tmp/helm-values.yaml
-          yq -i ".didcommInvitationImageUrl = \"${SERVICE_LOGO_URL}\"" /tmp/helm-values.yaml
+          yq -i '.didcommLabel = env(SERVICE_NAME)' /tmp/helm-values.yaml
+          yq -i '.didcommInvitationImageUrl = env(SERVICE_LOGO_URL)' /tmp/helm-values.yaml
           echo "--- Helm values ---"
           cat /tmp/helm-values.yaml
 
