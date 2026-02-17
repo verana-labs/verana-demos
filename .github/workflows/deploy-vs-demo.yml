@@ -53,8 +53,8 @@ jobs:
 
       - name: Resolve deployment.yaml placeholders
         run: |
-          # Substitute __NETWORK__ with the actual network from branch name
-          sed "s/__NETWORK__/${NETWORK}/g" vs/deployment.yaml > /tmp/deployment-resolved.yaml
+          # Substitute __NETWORK__ and __VS_NAME__ with values from branch name
+          sed -e "s/__NETWORK__/${NETWORK}/g" -e "s/__VS_NAME__/${VS_NAME}/g" vs/deployment.yaml > /tmp/deployment-resolved.yaml
           echo "--- Resolved deployment.yaml ---"
           cat /tmp/deployment-resolved.yaml
 
@@ -151,16 +151,24 @@ jobs:
           echo "AGENT_DID=${AGENT_DID}" >> "$GITHUB_ENV"
           ok "Agent DID: $AGENT_DID"
 
+          # Discover Organization VTJSC from ECS TR DID document
+          ORG_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "organization")
+          ORG_JSC_URL=$(echo "$ORG_VTJSC_OUTPUT" | sed -n '1p')
+
+          # Discover Service VTJSC and schema ID from ECS TR DID document
+          SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
+          CS_SERVICE_ID=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '2p')
+          echo "CS_SERVICE_ID=${CS_SERVICE_ID}" >> "$GITHUB_ENV"
+
+          # Discover active root permission for Service schema via indexer
+          ROOT_PERM_SERVICE=$(discover_active_root_perm "$CS_SERVICE_ID")
+
           # Clean up self-generated items
           cleanup_self_generated "$ADMIN_API"
 
           # Obtain Organization credential from ECS TR
           ORG_LOGO_B64=$(curl -sfL "$ORG_LOGO_URL" | base64 -w 0)
           SERVICE_LOGO_B64=$(curl -sfL "$SERVICE_LOGO_URL" | base64 -w 0)
-
-          ORG_JSC_URL=$(curl -sf "${ECS_TR_ADMIN_API}/v1/vt/json-schema-credentials" \
-            | jq -r '.data[] | select(.credential.type[]? == "VerifiableTrustJsonSchemaCredential") | select(.credential.credentialSubject.jsonSchema."$ref" | test("org")) | .credential.id' \
-            | head -1)
 
           ORG_CLAIMS=$(jq -n \
             --arg id "$AGENT_DID" \
@@ -173,7 +181,7 @@ jobs:
 
           issue_remote_and_link "$ECS_TR_ADMIN_API" "$ADMIN_API" "organization" "$ORG_JSC_URL" "$AGENT_DID" "$ORG_CLAIMS"
 
-          # Self-create ISSUER permission for Service schema
+          # Self-create ISSUER permission for Service schema (OPEN mode)
           EFFECTIVE_FROM=$(future_timestamp 15)
           ISSUER_PERM_SERVICE=$(submit_tx "create_permission" "permission_id" \
             veranad tx perm create-perm "$CS_SERVICE_ID" issuer "$AGENT_DID" \

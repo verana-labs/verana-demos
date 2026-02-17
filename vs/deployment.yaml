@@ -6,23 +6,23 @@
 #   2. Edit this file with your service-specific values
 #   3. Run the workflow from GitHub Actions
 #
-# Network (testnet/devnet) is derived from the branch name.
-# The workflow substitutes __NETWORK__ placeholders at deploy time.
+# Network (testnet/devnet) and service name are derived from the branch name.
+# The workflow substitutes __NETWORK__ and __VS_NAME__ placeholders at deploy time.
+# Example: vs/testnet-example-vs → __NETWORK__=testnet, __VS_NAME__=example-vs
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
 chartVersion: v1.7.3-dev.3
 
-# __NETWORK__ is replaced by the workflow with testnet or devnet
 chartNamespace: vna-__NETWORK__-1
 
 global:
   domain: __NETWORK__.verana.network
 
-name: example-vs
+name: __VS_NAME__
 replicas: 1
 
 adminPort: 3000
 didcommPort: 3001
-eventsBaseUrl: "https://example-vs.__NETWORK__.verana.network"
+eventsBaseUrl: "https://__VS_NAME__.__NETWORK__.verana.network"
 publicDidMethod: "webvh"
 
 resources:
@@ -34,8 +34,8 @@ resources:
     memory: 512Mi
 
 ingress:
-  host: "example-vs.__NETWORK__.verana.network"
-  tlsSecret: "public.example-vs.__NETWORK__.verana.network-cert"
+  host: "__VS_NAME__.__NETWORK__.verana.network"
+  tlsSecret: "public.__VS_NAME__.__NETWORK__.verana.network-cert"
   public:
     enableCors: true
   private:
