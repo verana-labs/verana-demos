@@ -77,17 +77,24 @@ log "Network: $NETWORK (chain: $CHAIN_ID)"
 ADMIN_API="http://localhost:${VS_AGENT_ADMIN_PORT}"
 
 # ---------------------------------------------------------------------------
-# Discover ECS Service schema ID from the ECS Trust Registry
+# Discover ECS schema IDs from the ECS Trust Registry DID document
 # ---------------------------------------------------------------------------
 
-if [ -n "${CS_SERVICE_ID:-}" ]; then
-  ok "Using provided CS_SERVICE_ID=$CS_SERVICE_ID"
-else
-  CS_SERVICE_ID=$(discover_ecs_schema_id "$ECS_TR_PUBLIC_URL" "service")
-  if [ -z "$CS_SERVICE_ID" ]; then
-    err "Could not auto-discover Service schema ID from ECS TR"
-    exit 1
-  fi
+# Discover Organization VTJSC (URL needed for issue-credential)
+ORG_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "organization")
+ORG_JSC_URL=$(echo "$ORG_VTJSC_OUTPUT" | sed -n '1p')
+CS_ORG_ID=$(echo "$ORG_VTJSC_OUTPUT" | sed -n '2p')
+if [ -z "$ORG_JSC_URL" ] || [ -z "$CS_ORG_ID" ]; then
+  err "Could not discover Organization VTJSC from ECS TR DID document"
+  exit 1
+fi
+
+# Discover Service VTJSC (schema ID needed for issuer permission + VTJSC creation)
+SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
+CS_SERVICE_ID=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '2p')
+if [ -z "$CS_SERVICE_ID" ]; then
+  err "Could not discover Service schema ID from ECS TR DID document"
+  exit 1
 fi
 
 # Discover the active root permission for the Service schema
@@ -186,19 +193,7 @@ if [ -z "$SERVICE_LOGO_B64" ]; then
 fi
 ok "Logos downloaded and base64-encoded"
 
-# Find the Organization VTJSC URL from the ECS Trust Registry
-log "Fetching Organization VTJSC URL from ECS TR..."
-ORG_JSC_URL=$(curl -sf "${ECS_TR_ADMIN_API}/v1/vt/json-schema-credentials" \
-  | jq -r '.data[] | select(.credential.type[]? == "VerifiableTrustJsonSchemaCredential") | select(.credential.credentialSubject.jsonSchema."$ref" | test("org")) | .credential.id' \
-  | head -1)
-if [ -z "$ORG_JSC_URL" ]; then
-  err "Could not find Organization VTJSC on the ECS TR at ${ECS_TR_ADMIN_API}"
-  err "Make sure the ECS TR is set up and has the Organization schema VTJSC."
-  exit 1
-fi
-ok "ECS TR Organization VTJSC: $ORG_JSC_URL"
-
-# Request credential from ECS TR, link on local agent
+# Request Organization credential from ECS TR, link on local agent
 ORG_CLAIMS=$(jq -n \
   --arg id "$AGENT_DID" \
   --arg name "$ORG_NAME" \

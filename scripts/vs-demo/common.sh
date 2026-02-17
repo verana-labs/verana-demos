@@ -38,6 +38,7 @@ set_network_vars() {
       RESOLVER_URL="${RESOLVER_URL:-https://resolver.devnet.verana.network}"
       ECS_TR_ADMIN_API="${ECS_TR_ADMIN_API:-https://admin-ecs-trust-registry.devnet.verana.network}"
       ECS_TR_PUBLIC_URL="${ECS_TR_PUBLIC_URL:-https://ecs-trust-registry.devnet.verana.network}"
+      INDEXER_URL="${INDEXER_URL:-https://idx.devnet.verana.network}"
       ;;
     testnet)
       CHAIN_ID="${CHAIN_ID:-vna-testnet-1}"
@@ -47,6 +48,7 @@ set_network_vars() {
       RESOLVER_URL="${RESOLVER_URL:-https://resolver.testnet.verana.network}"
       ECS_TR_ADMIN_API="${ECS_TR_ADMIN_API:-https://admin-ecs-trust-registry.testnet.verana.network}"
       ECS_TR_PUBLIC_URL="${ECS_TR_PUBLIC_URL:-https://ecs-trust-registry.testnet.verana.network}"
+      INDEXER_URL="${INDEXER_URL:-https://idx.testnet.verana.network}"
       ;;
     *)
       err "Unknown network: $network. Use 'devnet' or 'testnet'."
@@ -54,7 +56,7 @@ set_network_vars() {
       ;;
   esac
 
-  export CHAIN_ID NODE_RPC FEES FAUCET_URL RESOLVER_URL ECS_TR_ADMIN_API ECS_TR_PUBLIC_URL
+  export CHAIN_ID NODE_RPC FEES FAUCET_URL RESOLVER_URL ECS_TR_ADMIN_API ECS_TR_PUBLIC_URL INDEXER_URL
 }
 
 # ---------------------------------------------------------------------------
@@ -179,16 +181,20 @@ compute_sri_digest() {
 # ECS Trust Registry discovery helpers
 # ---------------------------------------------------------------------------
 
-# Discover a schema ID from the ECS Trust Registry by resolving its DID document
-# and fetching the corresponding VTJSC.
-# Usage: discover_ecs_schema_id <ecs_public_url> <schema_pattern>
-# Example: discover_ecs_schema_id "$ECS_TR_PUBLIC_URL" "service"
-# Returns: the numeric VPR schema ID on stdout
-discover_ecs_schema_id() {
+# Discover a VTJSC from the ECS Trust Registry by resolving its DID document.
+# Finds the LinkedVerifiablePresentation service entry matching "<schema_name>-jsc-vp",
+# fetches the VP, and extracts the VTJSC credential URL and VPR schema ID.
+#
+# Usage: discover_ecs_vtjsc <ecs_public_url> <schema_name>
+# Example: discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service"
+# Outputs two lines to stdout:
+#   line 1: VTJSC credential URL (jsonSchemaCredentialId for issue-credential)
+#   line 2: numeric VPR schema ID
+discover_ecs_vtjsc() {
   local ecs_public_url=$1
-  local schema_pattern=$2
+  local schema_name=$2
 
-  log "Resolving ECS TR DID document for '$schema_pattern' schema..."
+  log "Resolving ECS TR DID document for '$schema_name' VTJSC..."
 
   # Fetch the DID document from the ECS TR's public URL
   local did_doc
@@ -198,29 +204,38 @@ discover_ecs_schema_id() {
     return 1
   fi
 
-  # Find the VTJSC service entry matching the schema pattern
+  # Find the JSC-VP LinkedVerifiablePresentation service entry
+  local vp_url
+  vp_url=$(echo "$did_doc" | jq -r --arg pat "${schema_name}-jsc-vp" '
+    .service[] | select(.type == "LinkedVerifiablePresentation") |
+    select(.id | test($pat)) | .serviceEndpoint' | head -1)
+
+  if [ -z "$vp_url" ]; then
+    err "No LinkedVerifiablePresentation matching '${schema_name}-jsc-vp' in DID document"
+    return 1
+  fi
+  ok "VTJSC VP endpoint: $vp_url"
+
+  # Fetch the VP and extract the VTJSC credential
+  local vp
+  vp=$(curl -sf "$vp_url")
+  if [ -z "$vp" ]; then
+    err "Failed to fetch VTJSC VP from $vp_url"
+    return 1
+  fi
+
+  # Extract VTJSC credential URL (verifiableCredential[0].id)
   local vtjsc_url
-  vtjsc_url=$(echo "$did_doc" | jq -r --arg pat "$schema_pattern" '
-    .service[]? | select(.id | test($pat)) | .serviceEndpoint' | head -1)
-
+  vtjsc_url=$(echo "$vp" | jq -r '.verifiableCredential[0].id // empty')
   if [ -z "$vtjsc_url" ]; then
-    err "No VTJSC service entry matching '$schema_pattern' in DID document"
-    return 1
-  fi
-  ok "VTJSC endpoint: $vtjsc_url"
-
-  # Fetch the VTJSC credential
-  local vtjsc
-  vtjsc=$(curl -sf "$vtjsc_url")
-  if [ -z "$vtjsc" ]; then
-    err "Failed to fetch VTJSC from $vtjsc_url"
+    err "Could not extract VTJSC URL from VP"
     return 1
   fi
 
-  # Extract the VPR schema ref from credentialSubject.jsonSchema.$ref
-  # e.g. "vpr:verana:vna-testnet-1/cs/v1/js/99"
+  # Extract VPR schema ref from credentialSubject.jsonSchema.$ref
+  # e.g. "vpr:verana:vna-testnet-1/cs/v1/js/110"
   local schema_ref
-  schema_ref=$(echo "$vtjsc" | jq -r '.credentialSubject.jsonSchema."$ref" // empty')
+  schema_ref=$(echo "$vp" | jq -r '.verifiableCredential[0].credentialSubject.jsonSchema."$ref" // empty')
   if [ -z "$schema_ref" ]; then
     err "Could not extract jsonSchema.\$ref from VTJSC"
     return 1
@@ -234,36 +249,37 @@ discover_ecs_schema_id() {
     return 1
   fi
 
-  ok "Schema '$schema_pattern' → ID: $schema_id (ref: $schema_ref)"
+  ok "VTJSC '$schema_name' → URL: $vtjsc_url, schema ID: $schema_id"
+  echo "$vtjsc_url"
   echo "$schema_id"
 }
 
-# Discover the active root permission for a given credential schema.
+# Discover the active root permission (ECOSYSTEM type) for a given schema
+# using the Verana Indexer API.
 # Usage: discover_active_root_perm <schema_id>
 # Returns: the root permission ID on stdout
 discover_active_root_perm() {
   local schema_id=$1
 
-  log "Discovering active root permission for schema $schema_id..."
+  log "Discovering active root permission for schema $schema_id via indexer..."
 
-  local root_perms
-  root_perms=$(veranad q perm list-root-perms "$schema_id" \
-    --node "$NODE_RPC" --output json 2>/dev/null)
+  local perms
+  perms=$(curl -sf "${INDEXER_URL}/verana/perm/v1/list?schema_id=${schema_id}")
 
-  if [ -z "$root_perms" ]; then
-    err "Failed to query root permissions for schema $schema_id"
+  if [ -z "$perms" ]; then
+    err "Failed to query permissions from indexer for schema $schema_id"
     return 1
   fi
 
-  # Find an active root permission (status = active / not expired)
+  # Find an active ECOSYSTEM (root) permission
   local root_perm_id
-  root_perm_id=$(echo "$root_perms" | jq -r '
-    .root_permissions[]? |
-    select(.status == "active" or .status == "ACTIVE" or .status == "ROOT_PERMISSION_STATUS_ACTIVE") |
+  root_perm_id=$(echo "$perms" | jq -r '
+    .permissions[] |
+    select(.type == "ECOSYSTEM" and .perm_state == "ACTIVE") |
     .id' | head -1)
 
   if [ -z "$root_perm_id" ]; then
-    err "No active root permission found for schema $schema_id"
+    err "No active ECOSYSTEM permission found for schema $schema_id"
     return 1
   fi
 
