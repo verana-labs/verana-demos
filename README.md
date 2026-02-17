@@ -24,6 +24,32 @@ scripts/vs-demo/
 └── 02-create-trust-registry.sh  # Part 2: Trust Registry (local)
 ```
 
+## Local Usage (Docker + ngrok)
+
+### Local prerequisites
+
+- **Docker** with `linux/amd64` platform support
+- **ngrok** — authenticated ([ngrok.com](https://ngrok.com))
+- **veranad** — Verana blockchain CLI
+- **curl**, **jq**
+
+### Quick start
+
+```bash
+git clone https://github.com/verana-labs/verana-demos.git
+cd verana-demos
+
+# Edit vs/config.env with your values
+source vs/config.env
+chmod +x scripts/vs-demo/*.sh
+
+# Part 1: Deploy VS Agent + obtain ECS credentials
+./scripts/vs-demo/01-deploy-vs.sh
+
+# Part 2: Create Trust Registry
+./scripts/vs-demo/02-create-trust-registry.sh
+```
+
 ## CI/CD Usage (GitHub Actions)
 
 ### Prerequisites
@@ -73,32 +99,6 @@ The workflow:
 | `setup-part1` | Obtain Organization + Service credentials from ECS TR |
 | `setup-part2` | Create Trust Registry, schema, permissions, VTJSC, optional AnonCreds |
 | `all` | Run all steps in sequence |
-
-## Local Usage (Docker + ngrok)
-
-### Local prerequisites
-
-- **Docker** with `linux/amd64` platform support
-- **ngrok** — authenticated ([ngrok.com](https://ngrok.com))
-- **veranad** — Verana blockchain CLI
-- **curl**, **jq**
-
-### Quick start
-
-```bash
-git clone https://github.com/verana-labs/verana-demos.git
-cd verana-demos
-
-# Edit vs/config.env with your values
-source vs/config.env
-chmod +x scripts/vs-demo/*.sh
-
-# Part 1: Deploy VS Agent + obtain ECS credentials
-./scripts/vs-demo/01-deploy-vs.sh
-
-# Part 2: Create Trust Registry
-./scripts/vs-demo/02-create-trust-registry.sh
-```
 
 ## Configuration Reference
 
