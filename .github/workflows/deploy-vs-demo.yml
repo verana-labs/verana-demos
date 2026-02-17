@@ -292,6 +292,21 @@ jobs:
           echo "Trust Registry setup complete: TR=$TRUST_REG_ID Schema=$CUSTOM_SCHEMA_ID"
 
       # -----------------------------------------------------------------------
+      # SUMMARY
+      # -----------------------------------------------------------------------
+      - name: Print Verifiable Service URL
+        if: success()
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "  Verifiable Service deployed successfully"
+          echo "=========================================="
+          echo ""
+          echo "  URL          : https://${INGRESS_HOST}"
+          echo "  DID Document : https://${INGRESS_HOST}/.well-known/did.json"
+          echo ""
+
+      # -----------------------------------------------------------------------
       # CLEANUP
       # -----------------------------------------------------------------------
       - name: Cleanup port-forward
