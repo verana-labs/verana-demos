@@ -260,14 +260,29 @@ discover_ecs_vtjsc() {
 # Returns: the root permission ID on stdout
 discover_active_root_perm() {
   local schema_id=$1
+  local url="${INDEXER_URL}/verana/perm/v1/list?schema_id=${schema_id}"
 
   log "Discovering active root permission for schema $schema_id via indexer..."
+  log "Indexer URL: $url"
 
-  local perms
-  perms=$(curl -sf "${INDEXER_URL}/verana/perm/v1/list?schema_id=${schema_id}")
+  local perms http_code
+  local max_retries=3
+  local attempt=0
 
-  if [ -z "$perms" ]; then
-    err "Failed to query permissions from indexer for schema $schema_id"
+  while [ $attempt -lt $max_retries ]; do
+    attempt=$((attempt + 1))
+    http_code=$(curl -s -o /tmp/indexer_response.json -w '%{http_code}' "$url")
+    if [ "$http_code" = "200" ]; then
+      perms=$(cat /tmp/indexer_response.json)
+      break
+    fi
+    log "Indexer request attempt $attempt/$max_retries returned HTTP $http_code, retrying in 5s..."
+    sleep 5
+  done
+
+  if [ "$http_code" != "200" ] || [ -z "$perms" ]; then
+    err "Failed to query indexer (HTTP $http_code) at $url"
+    [ -f /tmp/indexer_response.json ] && err "Response: $(cat /tmp/indexer_response.json)"
     return 1
   fi
 
@@ -280,6 +295,7 @@ discover_active_root_perm() {
 
   if [ -z "$root_perm_id" ]; then
     err "No active ECOSYSTEM permission found for schema $schema_id"
+    err "Permissions returned: $(echo "$perms" | jq -c '.permissions | length') entries"
     return 1
   fi
 
