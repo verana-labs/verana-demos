@@ -319,31 +319,50 @@ issue_and_link() {
 
   # Get the VTJSC URL for this schema
   local vpr_ref="vpr:verana:${chain_id}/cs/v1/js/${schema_id}"
+  log "Looking up VTJSC for schema $schema_id (ref: $vpr_ref)..."
+
+  local jsc_list_code jsc_list
+  jsc_list_code=$(curl -s -o /tmp/jsc_list.json -w '%{http_code}' "${admin_api}/v1/vt/json-schema-credentials")
+  jsc_list=$(cat /tmp/jsc_list.json)
+
+  if [ "$jsc_list_code" != "200" ]; then
+    err "Failed to list VTJSCs (HTTP $jsc_list_code). Response: $jsc_list"
+    return 1
+  fi
+
   local jsc_url
-  jsc_url=$(curl -sf "${admin_api}/v1/vt/json-schema-credentials" \
-    | jq -r --arg sid "$vpr_ref" '.data[] | select(.schemaId == $sid) | .credential.id')
+  jsc_url=$(echo "$jsc_list" | jq -r --arg sid "$vpr_ref" '.data[] | select(.schemaId == $sid) | .credential.id')
   if [ -z "$jsc_url" ]; then
     err "VTJSC not found for schema $schema_id (ref: $vpr_ref)"
+    err "Available schemas: $(echo "$jsc_list" | jq -c '[.data[].schemaId]')"
     return 1
   fi
   ok "VTJSC URL: $jsc_url"
 
   # Issue the credential
-  local credential
-  credential=$(curl -sf -X POST "${admin_api}/v1/vt/issue-credential" \
-    -H 'Content-Type: application/json' \
-    -d "{
-      \"format\": \"jsonld\",
-      \"did\": \"${agent_did}\",
-      \"jsonSchemaCredentialId\": \"${jsc_url}\",
-      \"claims\": ${claims_json}
-    }")
+  local request_body
+  request_body=$(jq -n \
+    --arg fmt "jsonld" \
+    --arg did "$agent_did" \
+    --arg jsc "$jsc_url" \
+    --argjson claims "$claims_json" \
+    '{format: $fmt, did: $did, jsonSchemaCredentialId: $jsc, claims: $claims}')
 
-  if [ -z "$credential" ] || echo "$credential" | jq -e '.statusCode' > /dev/null 2>&1; then
-    err "Failed to issue credential. Response: $credential"
+  local issue_url="${admin_api}/v1/vt/issue-credential"
+  log "Issuing credential via $issue_url"
+
+  local issue_code credential
+  issue_code=$(curl -s -o /tmp/issue_self.json -w '%{http_code}' \
+    -X POST "$issue_url" \
+    -H 'Content-Type: application/json' \
+    -d "$request_body")
+  credential=$(cat /tmp/issue_self.json)
+
+  if [ "$issue_code" != "200" ] && [ "$issue_code" != "201" ]; then
+    err "Failed to issue credential (HTTP $issue_code). Response: $credential"
     return 1
   fi
-  ok "Credential issued"
+  ok "Credential issued (HTTP $issue_code)"
 
   # Extract signed credential
   local signed_cred
@@ -353,16 +372,24 @@ issue_and_link() {
   fi
 
   # Link as VP
-  local link_result
-  link_result=$(curl -sf -X POST "${admin_api}/v1/vt/linked-credentials" \
-    -H 'Content-Type: application/json' \
-    -d "{
-      \"schemaBaseId\": \"${schema_base_id}\",
-      \"credential\": ${signed_cred}
-    }")
+  local link_url="${admin_api}/v1/vt/linked-credentials"
+  log "Linking credential on agent: $link_url"
 
-  if echo "$link_result" | jq -e '.statusCode' > /dev/null 2>&1; then
-    err "Failed to link credential. Response: $link_result"
+  local link_body
+  link_body=$(jq -n \
+    --arg sbi "$schema_base_id" \
+    --argjson cred "$signed_cred" \
+    '{schemaBaseId: $sbi, credential: $cred}')
+
+  local link_code link_result
+  link_code=$(curl -s -o /tmp/link_self.json -w '%{http_code}' \
+    -X POST "$link_url" \
+    -H 'Content-Type: application/json' \
+    -d "$link_body")
+  link_result=$(cat /tmp/link_self.json)
+
+  if [ "$link_code" != "200" ] && [ "$link_code" != "201" ]; then
+    err "Failed to link credential (HTTP $link_code). Response: $link_result"
     return 1
   fi
   ok "Credential linked as VP (schemaBaseId: $schema_base_id)"
@@ -378,23 +405,37 @@ issue_remote_and_link() {
   local target_did=$5
   local claims_json=$6
 
+  local request_body
+  request_body=$(jq -n \
+    --arg fmt "jsonld" \
+    --arg did "$target_did" \
+    --arg jsc "$jsc_url" \
+    --argjson claims "$claims_json" \
+    '{format: $fmt, did: $did, jsonSchemaCredentialId: $jsc, claims: $claims}')
+
   # Issue via remote API
-  log "Requesting credential from remote API..."
-  local credential
-  credential=$(curl -sf -X POST "${remote_api}/v1/vt/issue-credential" \
+  local issue_url="${remote_api}/v1/vt/issue-credential"
+  log "Requesting credential from remote API: $issue_url"
+  log "Request body: $(echo "$request_body" | jq -c '.')"
+
+  local http_code credential
+  http_code=$(curl -s -o /tmp/issue_response.json -w '%{http_code}' \
+    -X POST "$issue_url" \
     -H 'Content-Type: application/json' \
-    -d "{
-      \"format\": \"jsonld\",
-      \"did\": \"${target_did}\",
-      \"jsonSchemaCredentialId\": \"${jsc_url}\",
-      \"claims\": ${claims_json}
-    }")
+    -d "$request_body")
+  credential=$(cat /tmp/issue_response.json)
+
+  if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
+    err "Remote API returned HTTP $http_code"
+    err "Response: $credential"
+    return 1
+  fi
 
   if [ -z "$credential" ] || echo "$credential" | jq -e '.statusCode' > /dev/null 2>&1; then
     err "Remote API failed to issue credential. Response: $credential"
     return 1
   fi
-  ok "Credential received from remote API"
+  ok "Credential received from remote API (HTTP $http_code)"
 
   # Extract signed credential
   local signed_cred
@@ -404,16 +445,24 @@ issue_remote_and_link() {
   fi
 
   # Link on local agent
-  local link_result
-  link_result=$(curl -sf -X POST "${local_api}/v1/vt/linked-credentials" \
-    -H 'Content-Type: application/json' \
-    -d "{
-      \"schemaBaseId\": \"${schema_base_id}\",
-      \"credential\": ${signed_cred}
-    }")
+  local link_url="${local_api}/v1/vt/linked-credentials"
+  log "Linking credential on local agent: $link_url"
 
-  if echo "$link_result" | jq -e '.statusCode' > /dev/null 2>&1; then
-    err "Failed to link credential on local agent. Response: $link_result"
+  local link_body
+  link_body=$(jq -n \
+    --arg sbi "$schema_base_id" \
+    --argjson cred "$signed_cred" \
+    '{schemaBaseId: $sbi, credential: $cred}')
+
+  local link_code link_result
+  link_code=$(curl -s -o /tmp/link_response.json -w '%{http_code}' \
+    -X POST "$link_url" \
+    -H 'Content-Type: application/json' \
+    -d "$link_body")
+  link_result=$(cat /tmp/link_response.json)
+
+  if [ "$link_code" != "200" ] && [ "$link_code" != "201" ]; then
+    err "Failed to link credential (HTTP $link_code). Response: $link_result"
     return 1
   fi
   ok "Credential linked as VP on local agent (schemaBaseId: $schema_base_id)"
