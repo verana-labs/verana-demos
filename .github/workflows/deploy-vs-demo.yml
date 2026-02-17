@@ -39,16 +39,15 @@ jobs:
 
       - name: Load configuration
         run: |
-          # Source config.env into GITHUB_ENV
+          # Source config.env (shell handles quote stripping correctly)
           set -a
           source vs/config.env
           set +a
-          # Export all variables to GITHUB_ENV
-          while IFS='=' read -r key value; do
-            # Skip comments and empty lines
-            [[ "$key" =~ ^#.*$ ]] && continue
-            [[ -z "$key" ]] && continue
-            echo "${key}=${value}" >> "$GITHUB_ENV"
+          # Write sourced variables to GITHUB_ENV using indirect expansion
+          # so that shell-evaluated values (without surrounding quotes) are used
+          while IFS= read -r line; do
+            key="${line%%=*}"
+            echo "${key}=${!key}" >> "$GITHUB_ENV"
           done < <(grep -E '^[A-Z_]+=' vs/config.env)
 
       - name: Resolve deployment.yaml placeholders
