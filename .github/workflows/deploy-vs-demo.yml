@@ -151,11 +151,16 @@ jobs:
           echo "AGENT_DID=${AGENT_DID}" >> "$GITHUB_ENV"
           ok "Agent DID: $AGENT_DID"
 
-          # Discover Service schema ID from ECS TR DID document
-          CS_SERVICE_ID=$(discover_ecs_schema_id "$ECS_TR_PUBLIC_URL" "service")
+          # Discover Organization VTJSC from ECS TR DID document
+          ORG_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "organization")
+          ORG_JSC_URL=$(echo "$ORG_VTJSC_OUTPUT" | sed -n '1p')
+
+          # Discover Service VTJSC and schema ID from ECS TR DID document
+          SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
+          CS_SERVICE_ID=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '2p')
           echo "CS_SERVICE_ID=${CS_SERVICE_ID}" >> "$GITHUB_ENV"
 
-          # Discover active root permission for Service schema
+          # Discover active root permission for Service schema via indexer
           ROOT_PERM_SERVICE=$(discover_active_root_perm "$CS_SERVICE_ID")
 
           # Clean up self-generated items
@@ -164,10 +169,6 @@ jobs:
           # Obtain Organization credential from ECS TR
           ORG_LOGO_B64=$(curl -sfL "$ORG_LOGO_URL" | base64 -w 0)
           SERVICE_LOGO_B64=$(curl -sfL "$SERVICE_LOGO_URL" | base64 -w 0)
-
-          ORG_JSC_URL=$(curl -sf "${ECS_TR_ADMIN_API}/v1/vt/json-schema-credentials" \
-            | jq -r '.data[] | select(.credential.type[]? == "VerifiableTrustJsonSchemaCredential") | select(.credential.credentialSubject.jsonSchema."$ref" | test("org")) | .credential.id' \
-            | head -1)
 
           ORG_CLAIMS=$(jq -n \
             --arg id "$AGENT_DID" \
