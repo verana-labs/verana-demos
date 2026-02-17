@@ -9,8 +9,8 @@ on:
         type: choice
         options:
           - deploy
-          - setup-part1
-          - setup-part2
+          - get-ecs-credentials
+          - create-trust-registry
           - all
         default: all
 
@@ -123,7 +123,7 @@ jobs:
       # PORT-FORWARD: Access admin API via kubectl (same pattern as verana-deploy)
       # -----------------------------------------------------------------------
       - name: Port-forward VS Agent admin API
-        if: inputs.step == 'setup-part1' || inputs.step == 'setup-part2' || inputs.step == 'all'
+        if: inputs.step == 'get-ecs-credentials' || inputs.step == 'create-trust-registry' || inputs.step == 'all'
         run: |
           kubectl port-forward -n "$CHART_NAMESPACE" "svc/$RELEASE_NAME" 3000:3000 &
           echo "PF_PID=$!" >> "$GITHUB_ENV"
@@ -138,7 +138,7 @@ jobs:
       # PART 1: Obtain ECS credentials (Organization + Service)
       # -----------------------------------------------------------------------
       - name: "Setup Part 1: Obtain ECS credentials"
-        if: inputs.step == 'setup-part1' || inputs.step == 'all'
+        if: inputs.step == 'get-ecs-credentials' || inputs.step == 'all'
         run: |
           export ADMIN_API="http://localhost:3000"
           source scripts/vs-demo/common.sh
@@ -210,7 +210,7 @@ jobs:
       # PART 2: Create Trust Registry with custom schema
       # -----------------------------------------------------------------------
       - name: "Setup Part 2: Create Trust Registry"
-        if: inputs.step == 'setup-part2' || inputs.step == 'all'
+        if: inputs.step == 'create-trust-registry' || inputs.step == 'all'
         run: |
           export ADMIN_API="http://localhost:3000"
           source scripts/vs-demo/common.sh
