@@ -156,6 +156,7 @@ jobs:
 
           # Discover Service VTJSC and schema ID from ECS TR DID document
           SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
+          SERVICE_JSC_URL=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '1p')
           CS_SERVICE_ID=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '2p')
           echo "CS_SERVICE_ID=${CS_SERVICE_ID}" >> "$GITHUB_ENV"
 
@@ -187,12 +188,7 @@ jobs:
             --effective-from "$EFFECTIVE_FROM")
           sleep 21
 
-          # Create Service VTJSC
-          curl -sf -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
-            -H 'Content-Type: application/json' \
-            -d "{\"schemaBaseId\": \"service\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CS_SERVICE_ID}\"}"
-
-          # Self-issue Service credential
+          # Self-issue Service credential (using the ECS TR's VTJSC, not a local one)
           SERVICE_CLAIMS=$(jq -n \
             --arg id "$AGENT_DID" \
             --arg name "$SERVICE_NAME" \
@@ -204,7 +200,7 @@ jobs:
             --arg privacy "$SERVICE_PRIVACY" \
             '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
 
-          issue_and_link "$ADMIN_API" "service" "$CHAIN_ID" "$CS_SERVICE_ID" "$AGENT_DID" "$SERVICE_CLAIMS"
+          issue_remote_and_link "$ADMIN_API" "$ADMIN_API" "service" "$SERVICE_JSC_URL" "$AGENT_DID" "$SERVICE_CLAIMS"
 
       # -----------------------------------------------------------------------
       # PART 2: Create Trust Registry with custom schema
