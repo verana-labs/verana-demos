@@ -180,6 +180,9 @@ jobs:
 
           issue_remote_and_link "$ECS_TR_ADMIN_API" "$ADMIN_API" "organization" "$ORG_JSC_URL" "$AGENT_DID" "$ORG_CLAIMS"
 
+          # Verify account has funds before on-chain transactions
+          check_balance "$USER_ACC"
+
           # Self-create ISSUER permission for Service schema (OPEN mode)
           EFFECTIVE_FROM=$(future_timestamp 15)
           ISSUER_PERM_SERVICE=$(submit_tx "create_permission" "permission_id" \
@@ -225,6 +228,9 @@ jobs:
           EGF_DOC_DIGEST=$(compute_sri_digest "$EGF_DOC_URL")
           ok "EGF digest: $EGF_DOC_DIGEST"
 
+          # Verify account has funds before on-chain transactions
+          check_balance "$USER_ACC"
+
           # Derive registry URL from ingress host
           TR_REGISTRY_URL="https://${INGRESS_HOST}"
 
@@ -248,68 +254,57 @@ jobs:
             --issuer-validation-validity-period '{"value":0}' \
             --verifier-validation-validity-period '{"value":0}' \
             --holder-validation-validity-period '{"value":0}' \
-            3 1)
+            1 1)
 
           # Create root permission
           EFFECTIVE_FROM=$(future_timestamp 15)
-          ROOT_PERM_ID=$(submit_tx "create_root_permission" "root_permission_id" \
+          ROOT_PERM=$(submit_tx "create_root_permission" "root_permission_id" \
             veranad tx perm create-root-perm \
             "$CUSTOM_SCHEMA_ID" "$AGENT_DID" 0 0 0 \
             --effective-from "$EFFECTIVE_FROM")
           sleep 21
 
-          # Obtain ISSUER permission via VP flow
-          START_RESULT=$(veranad tx perm start-perm-vp \
-            issuer "$ROOT_PERM_ID" --did "$AGENT_DID" \
-            --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-            --fees "$FEES" --gas auto --node "$NODE_RPC" \
-            --output json -y 2>&1 | extract_tx_json)
-          START_TX_HASH=$(echo "$START_RESULT" | jq -r '.txhash')
-          sleep 8
-          ISSUER_PERM_ID=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id")
+          # Self-create issuer permission (OPEN mode)
+          EFFECTIVE_FROM=$(future_timestamp 15)
+          ISSUER_PERM=$(submit_tx "create_permission" "permission_id" \
+            veranad tx perm create-perm "$CUSTOM_SCHEMA_ID" issuer "$AGENT_DID" \
+            --effective-from "$EFFECTIVE_FROM")
+          sleep 21
 
-          veranad tx perm set-perm-vp-validated "$ISSUER_PERM_ID" \
-            --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-            --fees "$FEES" --gas auto --node "$NODE_RPC" \
-            --output json -y 2>&1
-          sleep 6
-
-          # Create VTJSC
+          # Create VTJSC for custom schema
           curl -sf -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
             -H 'Content-Type: application/json' \
-            -d "{\"schemaBaseId\": \"${CUSTOM_SCHEMA_BASE_ID}\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}"
+            -d "{\"schemaBaseId\": \"custom\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}"
 
-          # Optional: AnonCreds
-          if [ "$ENABLE_ANONCREDS" = "true" ]; then
-            VTJSC_VPR_REF="vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}"
-            VTJSC_CRED_ID=$(curl -sf "${ADMIN_API}/v1/vt/json-schema-credentials" \
-              | jq -r --arg sid "$VTJSC_VPR_REF" '.data[] | select(.schemaId == $sid) | .credential.id')
-            curl -sf -X POST "${ADMIN_API}/v1/credential-types" \
+          ok "Trust Registry created: ID=$TRUST_REG_ID, Schema=$CUSTOM_SCHEMA_ID"
+
+          # Optionally set up AnonCreds credential definition
+          if [ "${ANONCREDS_ENABLED:-false}" = "true" ]; then
+            log "Setting up AnonCreds credential definition..."
+            ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/anoncreds/credential-definitions" \
               -H 'Content-Type: application/json' \
-              -d "{\"name\": \"${CUSTOM_SCHEMA_BASE_ID}\", \"version\": \"1.0\", \"relatedJsonSchemaCredentialId\": \"${VTJSC_CRED_ID}\", \"supportRevocation\": false}"
+              -d "{\"tag\": \"default\", \"schemaId\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}")
+            ok "AnonCreds credential definition created"
           fi
 
-          echo "Trust Registry setup complete: TR=$TRUST_REG_ID Schema=$CUSTOM_SCHEMA_ID"
+      # -----------------------------------------------------------------------
+      # CLEANUP: Stop port-forward
+      # -----------------------------------------------------------------------
+      - name: Stop port-forward
+        if: always()
+        run: |
+          if [ -n "${PF_PID:-}" ]; then
+            kill "$PF_PID" 2>/dev/null || true
+          fi
 
       # -----------------------------------------------------------------------
       # SUMMARY
       # -----------------------------------------------------------------------
-      - name: Print Verifiable Service URL
-        if: success()
-        run: |
-          echo ""
-          echo "=========================================="
-          echo "  Verifiable Service deployed successfully"
-          echo "=========================================="
-          echo ""
-          echo "  URL          : https://${INGRESS_HOST}"
-          echo "  DID Document : https://${INGRESS_HOST}/.well-known/did.json"
-          echo ""
-
-      # -----------------------------------------------------------------------
-      # CLEANUP
-      # -----------------------------------------------------------------------
-      - name: Cleanup port-forward
+      - name: Summary
         if: always()
         run: |
-          kill ${{ env.PF_PID }} 2>/dev/null || true
+          if [ -n "${INGRESS_HOST:-}" ]; then
+            echo "## VS Agent URL" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "https://${INGRESS_HOST}/.well-known/did.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
