@@ -85,16 +85,20 @@ submit_tx() {
   local event_type=$1; shift
   local attr_key=$1; shift
 
-  local result
-  result=$("$@" \
+  local raw_output
+  raw_output=$("$@" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
     --fees "$FEES" --gas auto --node "$NODE_RPC" \
-    --output json -y 2>&1 | extract_tx_json)
+    --output json -y 2>&1) || true
+
+  local result
+  result=$(echo "$raw_output" | extract_tx_json)
 
   local tx_hash
   tx_hash=$(echo "$result" | jq -r '.txhash // empty')
   if [ -z "$tx_hash" ]; then
-    err "TX failed. Output: $result"
+    err "TX failed. Raw output:"
+    echo "$raw_output" >&2
     return 1
   fi
   ok "TX submitted: $tx_hash"
