@@ -35,7 +35,7 @@ jobs:
           VS_NAME="${SUFFIX#*-}"
           echo "NETWORK=${NETWORK}" >> "$GITHUB_ENV"
           echo "VS_NAME=${VS_NAME}" >> "$GITHUB_ENV"
-          echo "Branch: $BRANCH — Network: $NETWORK — Service: $VS_NAME"
+          echo "Branch: $BRANCH \u2014 Network: $NETWORK \u2014 Service: $VS_NAME"
 
       - name: Load configuration
         run: |
@@ -70,7 +70,7 @@ jobs:
           echo "CHART_NAMESPACE=${CHART_NAMESPACE}" >> "$GITHUB_ENV"
           echo "RELEASE_NAME=${RELEASE_NAME}" >> "$GITHUB_ENV"
           echo "INGRESS_HOST=${INGRESS_HOST}" >> "$GITHUB_ENV"
-          echo "Chart: $CHART_SOURCE@$CHART_VERSION → $CHART_NAMESPACE/$RELEASE_NAME"
+          echo "Chart: $CHART_SOURCE@$CHART_VERSION \u2192 $CHART_NAMESPACE/$RELEASE_NAME"
 
       - name: Generate Helm values
         run: |
@@ -129,7 +129,7 @@ jobs:
           echo "PF_PID=$!" >> "$GITHUB_ENV"
           sleep 5
           curl -sf http://localhost:3000/v1/agent > /dev/null || {
-            echo "Port-forward failed — is the $RELEASE_NAME pod running in $CHART_NAMESPACE?"
+            echo "Port-forward failed \u2014 is the $RELEASE_NAME pod running in $CHART_NAMESPACE?"
             exit 1
           }
           echo "Port-forward established"
@@ -156,6 +156,7 @@ jobs:
 
           # Discover Service VTJSC and schema ID from ECS TR DID document
           SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
+          SERVICE_JSC_URL=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '1p')
           CS_SERVICE_ID=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '2p')
           echo "CS_SERVICE_ID=${CS_SERVICE_ID}" >> "$GITHUB_ENV"
 
@@ -190,12 +191,7 @@ jobs:
             --effective-from "$EFFECTIVE_FROM")
           sleep 21
 
-          # Create Service VTJSC
-          curl -sf -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
-            -H 'Content-Type: application/json' \
-            -d "{\"schemaBaseId\": \"service\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CS_SERVICE_ID}\"}"
-
-          # Self-issue Service credential
+          # Self-issue Service credential (using the ECS TR's VTJSC, not a local one)
           SERVICE_CLAIMS=$(jq -n \
             --arg id "$AGENT_DID" \
             --arg name "$SERVICE_NAME" \
@@ -207,7 +203,7 @@ jobs:
             --arg privacy "$SERVICE_PRIVACY" \
             '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
 
-          issue_and_link "$ADMIN_API" "service" "$CHAIN_ID" "$CS_SERVICE_ID" "$AGENT_DID" "$SERVICE_CLAIMS"
+          issue_remote_and_link "$ADMIN_API" "$ADMIN_API" "service" "$SERVICE_JSC_URL" "$AGENT_DID" "$SERVICE_CLAIMS"
 
       # -----------------------------------------------------------------------
       # PART 2: Create Trust Registry with custom schema

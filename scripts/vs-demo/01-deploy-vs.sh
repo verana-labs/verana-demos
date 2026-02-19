@@ -9,9 +9,8 @@
 #   3. Sets up the veranad CLI account
 #   4. Obtains an Organization credential from the ECS Trust Registry
 #   5. Self-creates an ISSUER permission for the Service schema
-#   6. Creates a Service VTJSC in the VS Agent
-#   7. Self-issues a Service credential and links it as a VP
-#   8. Verifies the setup
+#   6. Self-issues a Service credential (using the ECS TR's VTJSC) and links it as a VP
+#   7. Verifies the setup
 #
 # Prerequisites:
 #   - Docker
@@ -89,11 +88,12 @@ if [ -z "$ORG_JSC_URL" ] || [ -z "$CS_ORG_ID" ]; then
   exit 1
 fi
 
-# Discover Service VTJSC (schema ID needed for issuer permission + VTJSC creation)
+# Discover Service VTJSC (URL needed for issue-credential, schema ID needed for issuer permission)
 SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
+SERVICE_JSC_URL=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '1p')
 CS_SERVICE_ID=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '2p')
-if [ -z "$CS_SERVICE_ID" ]; then
-  err "Could not discover Service schema ID from ECS TR DID document"
+if [ -z "$SERVICE_JSC_URL" ] || [ -z "$CS_SERVICE_ID" ]; then
+  err "Could not discover Service VTJSC from ECS TR DID document"
   exit 1
 fi
 
@@ -221,26 +221,15 @@ sleep 21
 ok "ISSUER permission should now be active"
 
 # =============================================================================
-# STEP 6: Create Service VTJSC in VS agent
+# STEP 6: Self-issue Service credential and link as VP
+# =============================================================================
+# The Service credential references the ECS Trust Registry's VTJSC (not a local
+# one). VTJSCs must only be created by the trust registry that owns the schema.
+# As an issuer with an OPEN-mode permission, we self-issue against the ECS TR's
+# VTJSC and link the resulting credential as a VP in our own DID Document.
 # =============================================================================
 
-log "Step 6: Create Service VTJSC"
-
-VTJSC_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
-  -H 'Content-Type: application/json' \
-  -d "{\"schemaBaseId\": \"service\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CS_SERVICE_ID}\"}")
-
-if [ -z "$VTJSC_RESULT" ] || echo "$VTJSC_RESULT" | jq -e '.statusCode' > /dev/null 2>&1; then
-  err "Failed to create Service VTJSC. Response: $VTJSC_RESULT"
-  exit 1
-fi
-ok "Service VTJSC created"
-
-# =============================================================================
-# STEP 7: Self-issue Service credential and link as VP
-# =============================================================================
-
-log "Step 7: Self-issue Service credential"
+log "Step 6: Self-issue Service credential"
 
 SERVICE_CLAIMS=$(jq -n \
   --arg id "$AGENT_DID" \
@@ -253,13 +242,13 @@ SERVICE_CLAIMS=$(jq -n \
   --arg privacy "$SERVICE_PRIVACY" \
   '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
 
-issue_and_link "$ADMIN_API" "service" "$CHAIN_ID" "$CS_SERVICE_ID" "$AGENT_DID" "$SERVICE_CLAIMS"
+issue_remote_and_link "$ADMIN_API" "$ADMIN_API" "service" "$SERVICE_JSC_URL" "$AGENT_DID" "$SERVICE_CLAIMS"
 
 # =============================================================================
-# STEP 8: Verify
+# STEP 7: Verify
 # =============================================================================
 
-log "Step 8: Verify"
+log "Step 7: Verify"
 
 # Check DID Document
 DID_DOC=$(curl -sf "http://localhost:${VS_AGENT_PUBLIC_PORT}/.well-known/did.json")
