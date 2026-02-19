@@ -3,13 +3,18 @@
 # common.sh — Shared helpers for VS Demo scripts
 # =============================================================================
 #
-# Source this file from 01-deploy-vs.sh and 02-create-trust-registry.sh.
+# Source this file from the VS Demo scripts (01-deploy-vs.sh,
+# 02-get-ecs-credentials.sh, 03-create-trust-registry.sh).
 # It provides:
 #   - Colored logging functions
-#   - Transaction helpers (extract_tx_event, extract_tx_json)
-#   - VS Agent API helpers (wait_for_agent, cleanup_self_generated)
+#   - Transaction helpers (extract_tx_event, extract_tx_json, submit_tx)
+#   - VS Agent API helpers (wait_for_agent, cleanup_all_vtjscs, cleanup_ecs_credentials)
 #   - Network configuration (set_network_vars)
-#   - Schema download helper
+#   - ECS discovery helpers (discover_ecs_vtjsc, discover_active_root_perm)
+#   - Credential helpers (issue_and_link, issue_remote_and_link)
+#   - Permission helpers (find_active_issuer_perm)
+#   - Trust Registry duplicate detection (has_trust_registry_for_schema)
+#   - Schema download / logo helpers
 #
 # =============================================================================
 
@@ -167,23 +172,57 @@ wait_for_agent() {
   return 1
 }
 
-# Remove self-generated (non-VPR) VTJSCs and their linked credentials
-# Usage: cleanup_self_generated <admin_api_url>
-cleanup_self_generated() {
+# Remove ALL local VTJSCs and their linked credentials (both self-generated and VPR-linked)
+# Usage: cleanup_all_vtjscs <admin_api_url>
+cleanup_all_vtjscs() {
   local admin_api=$1
 
-  local self_jscs
-  self_jscs=$(curl -sf "${admin_api}/v1/vt/json-schema-credentials" \
-    | jq -r '.data[] | select(.schemaId | startswith("vpr:") | not) | .credential.id')
+  local all_jscs
+  all_jscs=$(curl -sf "${admin_api}/v1/vt/json-schema-credentials" \
+    | jq -r '.data[].credential.id' 2>/dev/null)
 
-  for jsc_id in $self_jscs; do
-    curl -sf -X DELETE "${admin_api}/v1/vt/linked-credentials" \
+  for jsc_id in $all_jscs; do
+    curl -s -X DELETE "${admin_api}/v1/vt/linked-credentials" \
       -H 'Content-Type: application/json' \
       -d "{\"credentialSchemaId\": \"$jsc_id\"}" > /dev/null 2>&1 || true
-    curl -sf -X DELETE "${admin_api}/v1/vt/json-schema-credentials" \
+    curl -s -X DELETE "${admin_api}/v1/vt/json-schema-credentials" \
       -H 'Content-Type: application/json' \
       -d "{\"id\": \"$jsc_id\"}" > /dev/null 2>&1 || true
   done
+}
+
+# Remove ECS-linked credentials (Organization + Service) and their VTJSCs
+# Call this before re-issuing ECS credentials so old linked VPs are removed.
+# Usage: cleanup_ecs_credentials <admin_api_url> <org_jsc_url> <service_jsc_url>
+cleanup_ecs_credentials() {
+  local admin_api=$1
+  local org_jsc_url=$2
+  local service_jsc_url=$3
+
+  log "Cleaning up previous ECS credentials..."
+  for jsc_url in "$org_jsc_url" "$service_jsc_url"; do
+    # Delete the linked VP
+    curl -s -X DELETE "${admin_api}/v1/vt/linked-credentials" \
+      -H 'Content-Type: application/json' \
+      -d "{\"credentialSchemaId\": \"$jsc_url\"}" > /dev/null 2>&1 || true
+    # Delete any locally-cached VTJSC
+    curl -s -X DELETE "${admin_api}/v1/vt/json-schema-credentials" \
+      -H 'Content-Type: application/json' \
+      -d "{\"id\": \"$jsc_url\"}" > /dev/null 2>&1 || true
+  done
+  # Also remove non-VPR self-generated VTJSCs from agent init
+  local self_jscs
+  self_jscs=$(curl -sf "${admin_api}/v1/vt/json-schema-credentials" \
+    | jq -r '.data[] | select(.schemaId | startswith("vpr:") | not) | .credential.id' 2>/dev/null)
+  for jsc_id in $self_jscs; do
+    curl -s -X DELETE "${admin_api}/v1/vt/linked-credentials" \
+      -H 'Content-Type: application/json' \
+      -d "{\"credentialSchemaId\": \"$jsc_id\"}" > /dev/null 2>&1 || true
+    curl -s -X DELETE "${admin_api}/v1/vt/json-schema-credentials" \
+      -H 'Content-Type: application/json' \
+      -d "{\"id\": \"$jsc_id\"}" > /dev/null 2>&1 || true
+  done
+  ok "Previous ECS credentials cleaned up"
 }
 
 # ---------------------------------------------------------------------------
@@ -607,6 +646,101 @@ setup_veranad_account() {
 
   ok "Account balance: ${balance} uvna"
   export USER_ACC_ADDR
+}
+
+# ---------------------------------------------------------------------------
+# Permission helpers
+# ---------------------------------------------------------------------------
+
+# Check if a DID already has an active ISSUER permission for a given schema.
+# Returns 0 (true) if an active ISSUER permission exists; 1 (false) otherwise.
+# On success, prints the permission ID to stdout.
+# Usage: find_active_issuer_perm <schema_id> <did>
+find_active_issuer_perm() {
+  local schema_id=$1
+  local did=$2
+  local url="${INDEXER_URL}/verana/perm/v1/list?schema_id=${schema_id}"
+
+  local perms http_code
+  http_code=$(curl -s -o /tmp/perm_check.json -w '%{http_code}' "$url")
+  if [ "$http_code" != "200" ]; then
+    return 1
+  fi
+  perms=$(cat /tmp/perm_check.json)
+
+  local perm_id
+  perm_id=$(echo "$perms" | jq -r --arg did "$did" '
+    .permissions[]? |
+    select(.type == "ISSUER" and .perm_state == "ACTIVE" and .did == $did) |
+    .id' | head -1)
+
+  if [ -n "$perm_id" ]; then
+    echo "$perm_id"
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Trust Registry duplicate detection
+# ---------------------------------------------------------------------------
+
+# Check if the DID already owns a trust registry with an identical schema.
+# Compares canonized schemas (with $id removed) to detect duplicates.
+# Returns 0 (true) if a matching TR+schema exists; 1 (false) otherwise.
+# On success, prints "trust_registry_id schema_id" to stdout.
+# Usage: has_trust_registry_for_schema <did> <local_schema_json>
+has_trust_registry_for_schema() {
+  local did=$1
+  local local_schema=$2
+
+  # Canonize local schema: remove $id, sort keys
+  local local_canon
+  local_canon=$(echo "$local_schema" | jq -Sc 'del(."$id")')
+
+  # Query indexer for trust registries owned by this DID
+  local url="${INDEXER_URL}/verana/tr/v1/list?did=${did}"
+  local http_code
+  http_code=$(curl -s -o /tmp/tr_list.json -w '%{http_code}' "$url")
+  if [ "$http_code" != "200" ]; then
+    return 1
+  fi
+
+  local tr_ids
+  tr_ids=$(jq -r '.trust_registries[]?.id // empty' /tmp/tr_list.json)
+  if [ -z "$tr_ids" ]; then
+    return 1
+  fi
+
+  # For each trust registry, list its schemas and compare
+  for tr_id in $tr_ids; do
+    local cs_url="${INDEXER_URL}/verana/cs/v1/list?trust_registry_id=${tr_id}"
+    local cs_code
+    cs_code=$(curl -s -o /tmp/cs_list.json -w '%{http_code}' "$cs_url")
+    if [ "$cs_code" != "200" ]; then
+      continue
+    fi
+
+    # Iterate over schemas in this trust registry
+    local schema_entries
+    schema_entries=$(jq -c '.credential_schemas[]?' /tmp/cs_list.json)
+    while IFS= read -r entry; do
+      [ -z "$entry" ] && continue
+      local cs_id on_chain_schema on_chain_canon
+      cs_id=$(echo "$entry" | jq -r '.id')
+      on_chain_schema=$(echo "$entry" | jq -r '.json_schema // empty')
+      if [ -z "$on_chain_schema" ]; then
+        continue
+      fi
+      on_chain_canon=$(echo "$on_chain_schema" | jq -Sc 'del(."$id")')
+      if [ "$local_canon" = "$on_chain_canon" ]; then
+        echo "$tr_id $cs_id"
+        return 0
+      fi
+    done <<< "$schema_entries"
+  done
+
+  return 1
 }
 
 # ---------------------------------------------------------------------------
