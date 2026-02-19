@@ -35,7 +35,7 @@ jobs:
           VS_NAME="${SUFFIX#*-}"
           echo "NETWORK=${NETWORK}" >> "$GITHUB_ENV"
           echo "VS_NAME=${VS_NAME}" >> "$GITHUB_ENV"
-          echo "Branch: $BRANCH \u2014 Network: $NETWORK \u2014 Service: $VS_NAME"
+          echo "Branch: $BRANCH — Network: $NETWORK — Service: $VS_NAME"
 
       - name: Load configuration
         run: |
@@ -70,7 +70,7 @@ jobs:
           echo "CHART_NAMESPACE=${CHART_NAMESPACE}" >> "$GITHUB_ENV"
           echo "RELEASE_NAME=${RELEASE_NAME}" >> "$GITHUB_ENV"
           echo "INGRESS_HOST=${INGRESS_HOST}" >> "$GITHUB_ENV"
-          echo "Chart: $CHART_SOURCE@$CHART_VERSION \u2192 $CHART_NAMESPACE/$RELEASE_NAME"
+          echo "Chart: $CHART_SOURCE@$CHART_VERSION → $CHART_NAMESPACE/$RELEASE_NAME"
 
       - name: Generate Helm values
         run: |
@@ -129,15 +129,15 @@ jobs:
           echo "PF_PID=$!" >> "$GITHUB_ENV"
           sleep 5
           curl -sf http://localhost:3000/v1/agent > /dev/null || {
-            echo "Port-forward failed \u2014 is the $RELEASE_NAME pod running in $CHART_NAMESPACE?"
+            echo "Port-forward failed — is the $RELEASE_NAME pod running in $CHART_NAMESPACE?"
             exit 1
           }
           echo "Port-forward established"
 
       # -----------------------------------------------------------------------
-      # PART 1: Obtain ECS credentials (Organization + Service)
+      # GET-ECS-CREDENTIALS: Obtain Organization + Service credentials
       # -----------------------------------------------------------------------
-      - name: "Setup Part 1: Obtain ECS credentials"
+      - name: "Get ECS credentials"
         if: inputs.step == 'get-ecs-credentials' || inputs.step == 'all'
         run: |
           export ADMIN_API="http://localhost:3000"
@@ -160,11 +160,8 @@ jobs:
           CS_SERVICE_ID=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '2p')
           echo "CS_SERVICE_ID=${CS_SERVICE_ID}" >> "$GITHUB_ENV"
 
-          # Discover active root permission for Service schema via indexer
-          ROOT_PERM_SERVICE=$(discover_active_root_perm "$CS_SERVICE_ID")
-
-          # Clean up self-generated items
-          cleanup_self_generated "$ADMIN_API"
+          # Clean up previous ECS credentials (linked VPs + VTJSCs)
+          cleanup_ecs_credentials "$ADMIN_API" "$ORG_JSC_URL" "$SERVICE_JSC_URL"
 
           # Obtain Organization credential from ECS TR
           ORG_LOGO_DATA_URI=$(download_logo_data_uri "$ORG_LOGO_URL")
@@ -181,15 +178,18 @@ jobs:
 
           issue_remote_and_link "$ECS_TR_ADMIN_API" "$ADMIN_API" "organization" "$ORG_JSC_URL" "$AGENT_DID" "$ORG_CLAIMS"
 
-          # Verify account has funds before on-chain transactions
-          check_balance "$USER_ACC"
-
-          # Self-create ISSUER permission for Service schema (OPEN mode)
-          EFFECTIVE_FROM=$(future_timestamp 15)
-          ISSUER_PERM_SERVICE=$(submit_tx "create_permission" "permission_id" \
-            veranad tx perm create-perm "$CS_SERVICE_ID" issuer "$AGENT_DID" \
-            --effective-from "$EFFECTIVE_FROM")
-          sleep 21
+          # Check if ISSUER permission already exists for the Service schema
+          if EXISTING_PERM=$(find_active_issuer_perm "$CS_SERVICE_ID" "$AGENT_DID"); then
+            ok "Active ISSUER permission already exists: $EXISTING_PERM — skipping creation"
+          else
+            log "No active ISSUER permission found — creating one"
+            check_balance "$USER_ACC"
+            EFFECTIVE_FROM=$(future_timestamp 15)
+            ISSUER_PERM_SERVICE=$(submit_tx "create_permission" "permission_id" \
+              veranad tx perm create-perm "$CS_SERVICE_ID" issuer "$AGENT_DID" \
+              --effective-from "$EFFECTIVE_FROM")
+            sleep 21
+          fi
 
           # Self-issue Service credential (using the ECS TR's VTJSC, not a local one)
           SERVICE_CLAIMS=$(jq -n \
@@ -206,81 +206,93 @@ jobs:
           issue_remote_and_link "$ADMIN_API" "$ADMIN_API" "service" "$SERVICE_JSC_URL" "$AGENT_DID" "$SERVICE_CLAIMS"
 
       # -----------------------------------------------------------------------
-      # PART 2: Create Trust Registry with custom schema
+      # CREATE-TRUST-REGISTRY: Create Trust Registry with custom schema
       # -----------------------------------------------------------------------
-      - name: "Setup Part 2: Create Trust Registry"
+      - name: "Create Trust Registry"
         if: inputs.step == 'create-trust-registry' || inputs.step == 'all'
         run: |
           export ADMIN_API="http://localhost:3000"
           source scripts/vs-demo/common.sh
           set_network_vars "$NETWORK"
 
-          # Get agent DID (may already be in GITHUB_ENV from Part 1)
+          # Get agent DID (may already be in GITHUB_ENV from previous step)
           if [ -z "${AGENT_DID:-}" ]; then
             AGENT_DID=$(curl -sf "${ADMIN_API}/v1/agent" | jq -r '.publicDid')
           fi
 
-          # Compute EGF digest
-          EGF_DOC_DIGEST=$(compute_sri_digest "$EGF_DOC_URL")
-          ok "EGF digest: $EGF_DOC_DIGEST"
-
-          # Verify account has funds before on-chain transactions
-          check_balance "$USER_ACC"
-
-          # Derive registry URL from ingress host
-          TR_REGISTRY_URL="https://${INGRESS_HOST}"
-
-          # Create Trust Registry
-          TRUST_REG_ID=$(submit_tx "create_trust_registry" "trust_registry_id" \
-            veranad tx tr create-trust-registry \
-            "$AGENT_DID" "en" "$EGF_DOC_URL" "$EGF_DOC_DIGEST" \
-            --aka "$TR_REGISTRY_URL")
-
-          # Create credential schema from vs/schema.json
+          # Load schema
           if [ -n "${CUSTOM_SCHEMA_URL:-}" ]; then
             SCHEMA_JSON=$(download_schema "$CUSTOM_SCHEMA_URL")
           else
             SCHEMA_JSON=$(jq -c '.' vs/schema.json)
           fi
 
-          CUSTOM_SCHEMA_ID=$(submit_tx "create_credential_schema" "credential_schema_id" \
-            veranad tx cs create-credential-schema "$TRUST_REG_ID" "$SCHEMA_JSON" \
-            --issuer-grantor-validation-validity-period '{"value":0}' \
-            --verifier-grantor-validation-validity-period '{"value":0}' \
-            --issuer-validation-validity-period '{"value":0}' \
-            --verifier-validation-validity-period '{"value":0}' \
-            --holder-validation-validity-period '{"value":0}' \
-            1 1)
+          # Check if a trust registry already exists for this schema
+          if EXISTING=$(has_trust_registry_for_schema "$AGENT_DID" "$SCHEMA_JSON"); then
+            EXISTING_TR_ID=$(echo "$EXISTING" | awk '{print $1}')
+            EXISTING_CS_ID=$(echo "$EXISTING" | awk '{print $2}')
+            ok "Trust registry already exists for this schema (TR=$EXISTING_TR_ID, CS=$EXISTING_CS_ID)"
+            ok "Skipping trust registry creation — nothing to do."
+          else
+            log "No existing trust registry found for this schema — creating resources"
 
-          # Create root permission
-          EFFECTIVE_FROM=$(future_timestamp 15)
-          ROOT_PERM=$(submit_tx "create_root_permission" "root_permission_id" \
-            veranad tx perm create-root-perm \
-            "$CUSTOM_SCHEMA_ID" "$AGENT_DID" 0 0 0 \
-            --effective-from "$EFFECTIVE_FROM")
-          sleep 21
+            # Compute EGF digest
+            EGF_DOC_DIGEST=$(compute_sri_digest "$EGF_DOC_URL")
+            ok "EGF digest: $EGF_DOC_DIGEST"
 
-          # Self-create issuer permission (OPEN mode)
-          EFFECTIVE_FROM=$(future_timestamp 15)
-          ISSUER_PERM=$(submit_tx "create_permission" "permission_id" \
-            veranad tx perm create-perm "$CUSTOM_SCHEMA_ID" issuer "$AGENT_DID" \
-            --effective-from "$EFFECTIVE_FROM")
-          sleep 21
+            # Derive registry URL from ingress host
+            TR_REGISTRY_URL="https://${INGRESS_HOST}"
 
-          # Create VTJSC for custom schema
-          curl -sf -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
-            -H 'Content-Type: application/json' \
-            -d "{\"schemaBaseId\": \"custom\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}"
+            # Create Trust Registry
+            check_balance "$USER_ACC"
+            TRUST_REG_ID=$(submit_tx "create_trust_registry" "trust_registry_id" \
+              veranad tx tr create-trust-registry \
+              "$AGENT_DID" "en" "$EGF_DOC_URL" "$EGF_DOC_DIGEST" \
+              --aka "$TR_REGISTRY_URL")
 
-          ok "Trust Registry created: ID=$TRUST_REG_ID, Schema=$CUSTOM_SCHEMA_ID"
+            # Create credential schema
+            check_balance "$USER_ACC"
+            CUSTOM_SCHEMA_ID=$(submit_tx "create_credential_schema" "credential_schema_id" \
+              veranad tx cs create-credential-schema "$TRUST_REG_ID" "$SCHEMA_JSON" \
+              --issuer-grantor-validation-validity-period '{"value":0}' \
+              --verifier-grantor-validation-validity-period '{"value":0}' \
+              --issuer-validation-validity-period '{"value":0}' \
+              --verifier-validation-validity-period '{"value":0}' \
+              --holder-validation-validity-period '{"value":0}' \
+              1 1)
 
-          # Optionally set up AnonCreds credential definition
-          if [ "${ANONCREDS_ENABLED:-false}" = "true" ]; then
-            log "Setting up AnonCreds credential definition..."
-            ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/anoncreds/credential-definitions" \
+            # Create root permission
+            check_balance "$USER_ACC"
+            EFFECTIVE_FROM=$(future_timestamp 15)
+            ROOT_PERM=$(submit_tx "create_root_permission" "root_permission_id" \
+              veranad tx perm create-root-perm \
+              "$CUSTOM_SCHEMA_ID" "$AGENT_DID" 0 0 0 \
+              --effective-from "$EFFECTIVE_FROM")
+            sleep 21
+
+            # Self-create issuer permission (OPEN mode)
+            check_balance "$USER_ACC"
+            EFFECTIVE_FROM=$(future_timestamp 15)
+            ISSUER_PERM=$(submit_tx "create_permission" "permission_id" \
+              veranad tx perm create-perm "$CUSTOM_SCHEMA_ID" issuer "$AGENT_DID" \
+              --effective-from "$EFFECTIVE_FROM")
+            sleep 21
+
+            # Create VTJSC for custom schema
+            curl -sf -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
               -H 'Content-Type: application/json' \
-              -d "{\"tag\": \"default\", \"schemaId\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}")
-            ok "AnonCreds credential definition created"
+              -d "{\"schemaBaseId\": \"custom\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}"
+
+            ok "Trust Registry created: ID=$TRUST_REG_ID, Schema=$CUSTOM_SCHEMA_ID"
+
+            # Optionally set up AnonCreds credential definition
+            if [ "${ANONCREDS_ENABLED:-false}" = "true" ]; then
+              log "Setting up AnonCreds credential definition..."
+              ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/anoncreds/credential-definitions" \
+                -H 'Content-Type: application/json' \
+                -d "{\"tag\": \"default\", \"schemaId\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}")
+              ok "AnonCreds credential definition created"
+            fi
           fi
 
       # -----------------------------------------------------------------------
