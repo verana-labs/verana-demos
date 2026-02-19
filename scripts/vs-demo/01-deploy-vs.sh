@@ -179,25 +179,17 @@ setup_veranad_account "$USER_ACC" "$FAUCET_URL"
 
 log "Step 4: Obtain Organization credential from ECS TR"
 
-# Download and base64-encode logos
-log "Downloading and encoding logos..."
-ORG_LOGO_B64=$(curl -sfL "$ORG_LOGO_URL" | base64 | tr -d '\n')
-if [ -z "$ORG_LOGO_B64" ]; then
-  err "Failed to download org logo from $ORG_LOGO_URL"
-  exit 1
-fi
-SERVICE_LOGO_B64=$(curl -sfL "$SERVICE_LOGO_URL" | base64 | tr -d '\n')
-if [ -z "$SERVICE_LOGO_B64" ]; then
-  err "Failed to download service logo from $SERVICE_LOGO_URL"
-  exit 1
-fi
-ok "Logos downloaded and base64-encoded"
+# Download logos and convert to data URIs (ECS schema requires data:<type>;base64,<data>)
+log "Downloading logos and converting to data URIs..."
+ORG_LOGO_DATA_URI=$(download_logo_data_uri "$ORG_LOGO_URL")
+SERVICE_LOGO_DATA_URI=$(download_logo_data_uri "$SERVICE_LOGO_URL")
+ok "Logos converted to data URIs"
 
 # Request Organization credential from ECS TR, link on local agent
 ORG_CLAIMS=$(jq -n \
   --arg id "$AGENT_DID" \
   --arg name "$ORG_NAME" \
-  --arg logo "$ORG_LOGO_B64" \
+  --arg logo "$ORG_LOGO_DATA_URI" \
   --arg rid "$ORG_REGISTRY_ID" \
   --arg addr "$ORG_ADDRESS" \
   --arg cc "$ORG_COUNTRY" \
@@ -252,7 +244,7 @@ SERVICE_CLAIMS=$(jq -n \
   --arg name "$SERVICE_NAME" \
   --arg type "$SERVICE_TYPE" \
   --arg desc "$SERVICE_DESCRIPTION" \
-  --arg logo "$SERVICE_LOGO_B64" \
+  --arg logo "$SERVICE_LOGO_DATA_URI" \
   --argjson age "$SERVICE_MIN_AGE" \
   --arg terms "$SERVICE_TERMS" \
   --arg privacy "$SERVICE_PRIVACY" \
