@@ -177,6 +177,60 @@ compute_sri_digest() {
   echo "sha384-${hash}"
 }
 
+# Download an image from a URL and return it as a data URI.
+# The ECS schema requires logo/avatar fields as data URIs: data:<type>;base64,<data>
+# Usage: download_logo_data_uri <url>
+# Returns: data:<content-type>;base64,<base64-encoded-data>
+download_logo_data_uri() {
+  local url=$1
+  local tmp_body="/tmp/logo_body_$$"
+  local tmp_headers="/tmp/logo_headers_$$"
+
+  # Download image and capture response headers
+  local http_code
+  http_code=$(curl -sfL -D "$tmp_headers" -o "$tmp_body" -w '%{http_code}' "$url")
+
+  if [ "$http_code" != "200" ] || [ ! -s "$tmp_body" ]; then
+    err "Failed to download logo from $url (HTTP $http_code)"
+    rm -f "$tmp_body" "$tmp_headers"
+    return 1
+  fi
+
+  # Extract content type from response headers
+  local content_type
+  content_type=$(grep -i '^content-type:' "$tmp_headers" | tail -1 | tr -d '\r' | sed 's/^[^:]*:[[:space:]]*//' | cut -d';' -f1 | xargs)
+
+  # Fallback: detect from URL extension if content type is missing or generic
+  case "$content_type" in
+    image/png|image/jpeg|image/svg+xml) ;;
+    *)
+      case "$url" in
+        *.png)          content_type="image/png" ;;
+        *.jpg|*.jpeg)   content_type="image/jpeg" ;;
+        *.svg)          content_type="image/svg+xml" ;;
+        *)
+          err "Could not determine image content type for $url (got: ${content_type:-empty})"
+          rm -f "$tmp_body" "$tmp_headers"
+          return 1
+          ;;
+      esac
+      warn "Content-Type header not image/*; using $content_type (from URL extension)"
+      ;;
+  esac
+
+  # Base64-encode and construct data URI
+  local b64
+  b64=$(base64 < "$tmp_body" | tr -d '\n')
+  rm -f "$tmp_body" "$tmp_headers"
+
+  if [ -z "$b64" ]; then
+    err "Failed to base64-encode logo from $url"
+    return 1
+  fi
+
+  echo "data:${content_type};base64,${b64}"
+}
+
 # ---------------------------------------------------------------------------
 # ECS Trust Registry discovery helpers
 # ---------------------------------------------------------------------------
