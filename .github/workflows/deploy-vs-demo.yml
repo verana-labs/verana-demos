@@ -166,13 +166,13 @@ jobs:
           cleanup_self_generated "$ADMIN_API"
 
           # Obtain Organization credential from ECS TR
-          ORG_LOGO_B64=$(curl -sfL "$ORG_LOGO_URL" | base64 -w 0)
-          SERVICE_LOGO_B64=$(curl -sfL "$SERVICE_LOGO_URL" | base64 -w 0)
+          ORG_LOGO_DATA_URI=$(download_logo_data_uri "$ORG_LOGO_URL")
+          SERVICE_LOGO_DATA_URI=$(download_logo_data_uri "$SERVICE_LOGO_URL")
 
           ORG_CLAIMS=$(jq -n \
             --arg id "$AGENT_DID" \
             --arg name "$ORG_NAME" \
-            --arg logo "$ORG_LOGO_B64" \
+            --arg logo "$ORG_LOGO_DATA_URI" \
             --arg rid "$ORG_REGISTRY_ID" \
             --arg addr "$ORG_ADDRESS" \
             --arg cc "$ORG_COUNTRY" \
@@ -198,7 +198,7 @@ jobs:
             --arg name "$SERVICE_NAME" \
             --arg type "$SERVICE_TYPE" \
             --arg desc "$SERVICE_DESCRIPTION" \
-            --arg logo "$SERVICE_LOGO_B64" \
+            --arg logo "$SERVICE_LOGO_DATA_URI" \
             --argjson age "$SERVICE_MIN_AGE" \
             --arg terms "$SERVICE_TERMS" \
             --arg privacy "$SERVICE_PRIVACY" \
