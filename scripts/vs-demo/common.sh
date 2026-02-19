@@ -457,8 +457,11 @@ issue_and_link() {
     signed_cred="$credential"
   fi
 
-  # Link as VP
+  # Link as VP (delete any previous linked credential for this VTJSC first)
   local link_url="${admin_api}/v1/vt/linked-credentials"
+  curl -s -X DELETE "${link_url}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"credentialSchemaId\": \"$jsc_url\"}" > /dev/null 2>&1 || true
   log "Linking credential on agent: $link_url"
 
   local link_body
@@ -530,8 +533,11 @@ issue_remote_and_link() {
     signed_cred="$credential"
   fi
 
-  # Link on local agent
+  # Link on local agent (delete any previous linked credential for this VTJSC first)
   local link_url="${local_api}/v1/vt/linked-credentials"
+  curl -s -X DELETE "${link_url}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"credentialSchemaId\": \"$jsc_url\"}" > /dev/null 2>&1 || true
   log "Linking credential on local agent: $link_url"
 
   local link_body
