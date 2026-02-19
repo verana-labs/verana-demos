@@ -34,7 +34,7 @@ set_network_vars() {
       CHAIN_ID="${CHAIN_ID:-vna-devnet-1}"
       NODE_RPC="${NODE_RPC:-https://rpc.devnet.verana.network}"
       FEES="${FEES:-600000uvna}"
-      FAUCET_URL="https://faucet.devnet.verana.network"
+      FAUCET_URL="https://faucet-vs.devnet.verana.network/invitation"
       RESOLVER_URL="${RESOLVER_URL:-https://resolver.devnet.verana.network}"
       ECS_TR_ADMIN_API="${ECS_TR_ADMIN_API:-https://admin-ecs-trust-registry.devnet.verana.network}"
       ECS_TR_PUBLIC_URL="${ECS_TR_PUBLIC_URL:-https://ecs-trust-registry.devnet.verana.network}"
@@ -44,7 +44,7 @@ set_network_vars() {
       CHAIN_ID="${CHAIN_ID:-vna-testnet-1}"
       NODE_RPC="${NODE_RPC:-https://rpc.testnet.verana.network}"
       FEES="${FEES:-600000uvna}"
-      FAUCET_URL="https://faucet.testnet.verana.network"
+      FAUCET_URL="https://faucet-vs.testnet.verana.network/invitation"
       RESOLVER_URL="${RESOLVER_URL:-https://resolver.testnet.verana.network}"
       ECS_TR_ADMIN_API="${ECS_TR_ADMIN_API:-https://admin-ecs-trust-registry.testnet.verana.network}"
       ECS_TR_PUBLIC_URL="${ECS_TR_PUBLIC_URL:-https://ecs-trust-registry.testnet.verana.network}"
@@ -76,6 +76,34 @@ extract_tx_event() {
 # Extract JSON from veranad tx output (strips "gas estimate:" prefix line)
 extract_tx_json() {
   grep -E '^\{' | head -1
+}
+
+# Check that the veranad account has sufficient balance for on-chain transactions.
+# Usage: check_balance <user_acc>
+# Exits with error and faucet URL if balance is zero.
+check_balance() {
+  local user_acc=$1
+  local addr
+  addr=$(veranad keys show "$user_acc" -a --keyring-backend test 2>/dev/null)
+  if [ -z "$addr" ]; then
+    err "Account '$user_acc' not found in keyring"
+    return 1
+  fi
+
+  local balance
+  balance=$(veranad q bank balances "$addr" --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -r '.balances[]? | select(.denom == "uvna") | .amount // "0"' 2>/dev/null || echo "0")
+
+  if [ -z "$balance" ] || [ "$balance" = "0" ]; then
+    err "Account '$user_acc' ($addr) has no uvna balance."
+    err "On-chain transactions require funds. Top up using the faucet:"
+    err ""
+    err "  ${FAUCET_URL}"
+    err ""
+    return 1
+  fi
+
+  ok "Account balance: ${balance} uvna"
 }
 
 # Submit a veranad tx command, wait for confirmation, and extract an event value.

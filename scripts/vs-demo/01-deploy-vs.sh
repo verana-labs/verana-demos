@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 01-deploy-vs.sh — Deploy a Verifiable Service and obtain ECS credentials
+# 01-deploy-vs.sh — Deploy a Verifiable Service (VS) Agent locally
 # =============================================================================
 #
-# This script deploys a VS Agent locally (Docker + ngrok), obtains an
-# Organization credential from the ECS Trust Registry, and self-issues a
-# Service credential. The agent ends up with both credentials linked as
-# Verifiable Presentations in its DID Document.
-#
-# Supports both devnet and testnet (identical ECS configuration).
+# This script:
+#   1. Discovers ECS schema IDs from the ECS Trust Registry DID document
+#   2. Deploys a VS Agent via Docker + ngrok
+#   3. Sets up the veranad CLI account
+#   4. Obtains an Organization credential from the ECS Trust Registry
+#   5. Self-creates an ISSUER permission for the Service schema
+#   6. Creates a Service VTJSC in the VS Agent
+#   7. Self-issues a Service credential and links it as a VP
+#   8. Verifies the setup
 #
 # Prerequisites:
-#   - docker (with linux/amd64 support)
-#   - ngrok (authenticated, https://ngrok.com)
-#   - veranad binary (https://github.com/verana-labs/verana-blockchain)
+#   - Docker
+#   - ngrok (authenticated)
+#   - veranad
 #   - curl, jq
 #
 # Usage:
-#   # Copy and edit the example config
-#   cp config/example-vs.env my-vs.env
-#   # Source it and run
-#   source my-vs.env
-#   ./scripts/vs-demo/01-deploy-vs.sh
+#   ./01-deploy-vs.sh
+#   NETWORK=devnet ./01-deploy-vs.sh
 #
 # =============================================================================
 
@@ -105,66 +105,64 @@ if [ -z "$ROOT_PERM_SERVICE" ]; then
 fi
 
 # =============================================================================
-# STEP 1: Deploy VS Agent with ngrok
+# STEP 1: Deploy VS Agent
 # =============================================================================
 
 log "Step 1: Deploy VS Agent"
 
-# Clean up any previous instance
-docker rm -f "$VS_AGENT_CONTAINER_NAME" 2>/dev/null || true
+# Pull image
+log "Pulling VS Agent image: $VS_AGENT_IMAGE"
+docker pull "$VS_AGENT_IMAGE"
 
-# Pull the image (amd64 for Apple Silicon compatibility)
-log "Pulling VS Agent image..."
-docker pull --platform linux/amd64 "$VS_AGENT_IMAGE" 2>&1 | tail -1
-
-# Start ngrok tunnel for the public port
-log "Starting ngrok tunnel on port ${VS_AGENT_PUBLIC_PORT}..."
-pkill -f "ngrok http ${VS_AGENT_PUBLIC_PORT}" 2>/dev/null || true
-sleep 1
-ngrok http "$VS_AGENT_PUBLIC_PORT" --log=stdout > /tmp/ngrok-vs-demo.log 2>&1 &
+# Start ngrok tunnel
+log "Starting ngrok tunnel on port $VS_AGENT_PUBLIC_PORT..."
+ngrok http "$VS_AGENT_PUBLIC_PORT" --log=stdout > /tmp/ngrok.log 2>&1 &
 NGROK_PID=$!
-sleep 5
+sleep 3
 
-NGROK_URL=$(curl -sf http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url // empty')
-if [ -z "$NGROK_URL" ]; then
-  err "Failed to get ngrok URL. Is ngrok installed and authenticated?"
+NGROK_URL=$(curl -sf http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+if [ -z "$NGROK_URL" ] || [ "$NGROK_URL" = "null" ]; then
+  err "Could not get ngrok URL. Is ngrok running?"
   exit 1
 fi
-NGROK_DOMAIN=$(echo "$NGROK_URL" | sed 's|https://||')
-ok "ngrok tunnel: $NGROK_URL (domain: $NGROK_DOMAIN)"
+ok "ngrok URL: $NGROK_URL"
 
 # Start VS Agent container
 log "Starting VS Agent container..."
-docker run --platform linux/amd64 -d \
-  -p "${VS_AGENT_PUBLIC_PORT}:3001" \
-  -p "${VS_AGENT_ADMIN_PORT}:3000" \
-  -v "${VS_AGENT_DATA_DIR}:/root/.afj" \
-  -e "AGENT_PUBLIC_DID=did:webvh:${NGROK_DOMAIN}" \
-  -e "AGENT_LABEL=${SERVICE_NAME}" \
-  -e "ENABLE_PUBLIC_API_SWAGGER=true" \
+mkdir -p "$VS_AGENT_DATA_DIR"
+docker run -d \
   --name "$VS_AGENT_CONTAINER_NAME" \
+  -p "${VS_AGENT_ADMIN_PORT}:3000" \
+  -p "${VS_AGENT_PUBLIC_PORT}:3001" \
+  -v "${VS_AGENT_DATA_DIR}:/data" \
+  -e "VS_AGENT_PUBLIC_URL=${NGROK_URL}" \
+  -e "VS_AGENT_DATA_DIR=/data" \
   "$VS_AGENT_IMAGE"
 
-log "Waiting for VS Agent to initialize (up to 60s)..."
-if wait_for_agent "$ADMIN_API"; then
-  ok "VS Agent is running"
+ok "VS Agent container started: $VS_AGENT_CONTAINER_NAME"
+
+# Wait for the agent to initialize
+log "Waiting for VS Agent to initialize..."
+if wait_for_agent "$ADMIN_API" 45; then
+  ok "VS Agent is ready"
 else
-  err "VS Agent failed to start. Check: docker logs $VS_AGENT_CONTAINER_NAME"
+  err "VS Agent did not start within timeout"
+  docker logs "$VS_AGENT_CONTAINER_NAME" 2>&1 | tail -20
   exit 1
 fi
 
-# Get the agent DID
-AGENT_INFO=$(curl -sf "${ADMIN_API}/v1/agent")
-AGENT_DID=$(echo "$AGENT_INFO" | jq -r '.publicDid')
-ok "VS Agent DID: $AGENT_DID"
-
 # =============================================================================
-# STEP 2: Clean up self-generated items
+# STEP 2: Get agent DID
 # =============================================================================
 
-log "Step 2: Clean up self-generated VTJSCs and linked credentials"
-cleanup_self_generated "$ADMIN_API"
-ok "Self-generated items removed"
+log "Step 2: Get agent DID"
+
+AGENT_DID=$(curl -sf "${ADMIN_API}/v1/agent" | jq -r '.publicDid')
+if [ -z "$AGENT_DID" ] || [ "$AGENT_DID" = "null" ]; then
+  err "Could not retrieve agent DID"
+  exit 1
+fi
+ok "Agent DID: $AGENT_DID"
 
 # =============================================================================
 # STEP 3: Set up veranad CLI
@@ -177,7 +175,10 @@ setup_veranad_account "$USER_ACC" "$FAUCET_URL"
 # STEP 4: Obtain Organization credential from ECS Trust Registry
 # =============================================================================
 
-log "Step 4: Obtain Organization credential from ECS TR"
+log "Step 4: Obtain Organization credential from ECS Trust Registry"
+
+# Clean up self-generated items from VS Agent init
+cleanup_self_generated "$ADMIN_API"
 
 # Download logos and convert to data URIs (ECS schema requires data:<type>;base64,<data>)
 log "Downloading logos and converting to data URIs..."
@@ -185,7 +186,6 @@ ORG_LOGO_DATA_URI=$(download_logo_data_uri "$ORG_LOGO_URL")
 SERVICE_LOGO_DATA_URI=$(download_logo_data_uri "$SERVICE_LOGO_URL")
 ok "Logos converted to data URIs"
 
-# Request Organization credential from ECS TR, link on local agent
 ORG_CLAIMS=$(jq -n \
   --arg id "$AGENT_DID" \
   --arg name "$ORG_NAME" \
@@ -202,6 +202,9 @@ issue_remote_and_link "$ECS_TR_ADMIN_API" "$ADMIN_API" "organization" "$ORG_JSC_
 # =============================================================================
 
 log "Step 5: Self-create ISSUER permission for Service schema"
+
+# Verify account has funds before on-chain transactions
+check_balance "$USER_ACC"
 
 EFFECTIVE_FROM=$(future_timestamp 15)
 log "Creating ISSUER permission (effective from: $EFFECTIVE_FROM)..."
@@ -288,19 +291,13 @@ cat > "$OUTPUT_FILE" <<EOF
 AGENT_DID=${AGENT_DID}
 NGROK_URL=${NGROK_URL}
 VS_AGENT_CONTAINER_NAME=${VS_AGENT_CONTAINER_NAME}
-VS_AGENT_ADMIN_PORT=${VS_AGENT_ADMIN_PORT}
-VS_AGENT_PUBLIC_PORT=${VS_AGENT_PUBLIC_PORT}
 
-# Verana account
-USER_ACC=${USER_ACC}
-USER_ACC_ADDR=${USER_ACC_ADDR}
-
-# Chain
-CHAIN_ID=${CHAIN_ID}
-NODE_RPC=${NODE_RPC}
-
-# ECS credentials
+# Schema IDs (from ECS TR)
+CS_ORG_ID=${CS_ORG_ID}
 CS_SERVICE_ID=${CS_SERVICE_ID}
+
+# Permissions
+ROOT_PERM_SERVICE=${ROOT_PERM_SERVICE}
 ISSUER_PERM_SERVICE=${ISSUER_PERM_SERVICE}
 EOF
 
@@ -310,16 +307,15 @@ ok "Resource IDs saved to ${OUTPUT_FILE}"
 # Summary
 # =============================================================================
 
-log "Part 1 complete!"
+log "Deployment complete!"
 echo ""
 echo "  VS Agent DID      : $AGENT_DID"
-echo "  Public URL         : $NGROK_URL"
-echo "  DID Document       : ${NGROK_URL}/.well-known/did.json"
-echo "  Admin API          : $ADMIN_API"
-echo "  Linked VPs         : $VP_COUNT"
+echo "  Public URL        : $NGROK_URL"
+echo "  DID Document      : ${NGROK_URL}/.well-known/did.json"
+echo "  Admin API         : $ADMIN_API"
+echo "  Linked VPs        : $VP_COUNT"
 echo ""
-echo "  Your Verifiable Service is now registered with the ECS ecosystem."
-echo "  Run 02-create-trust-registry.sh to create your own Trust Registry."
-echo ""
-echo "  To stop: docker rm -f $VS_AGENT_CONTAINER_NAME && kill $NGROK_PID"
+echo "  To stop the service:"
+echo "    docker stop $VS_AGENT_CONTAINER_NAME"
+echo "    kill $NGROK_PID  # ngrok"
 echo ""
