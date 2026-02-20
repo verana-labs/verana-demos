@@ -247,10 +247,10 @@ jobs:
             check_balance "$USER_ACC"
             TRUST_REG_ID=$(submit_tx "create_trust_registry" "trust_registry_id" \
               veranad tx tr create-trust-registry \
-              "$AGENT_DID" "en" "$EGF_DOC_URL" "$EGF_DOC_DIGEST" \
+              "$AGENT_DID" "${EGF_LANGUAGE:-en}" "$EGF_DOC_URL" "$EGF_DOC_DIGEST" \
               --aka "$TR_REGISTRY_URL")
 
-            # Create credential schema
+            # Create credential schema (issuer_mode=ECOSYSTEM, verifier_mode=OPEN)
             check_balance "$USER_ACC"
             CUSTOM_SCHEMA_ID=$(submit_tx "create_credential_schema" "credential_schema_id" \
               veranad tx cs create-credential-schema "$TRUST_REG_ID" "$SCHEMA_JSON" \
@@ -259,38 +259,79 @@ jobs:
               --issuer-validation-validity-period '{"value":0}' \
               --verifier-validation-validity-period '{"value":0}' \
               --holder-validation-validity-period '{"value":0}' \
-              1 1)
+              3 1)
 
             # Create root permission
             check_balance "$USER_ACC"
             EFFECTIVE_FROM=$(future_timestamp 15)
             ROOT_PERM=$(submit_tx "create_root_permission" "root_permission_id" \
               veranad tx perm create-root-perm \
-              "$CUSTOM_SCHEMA_ID" "$AGENT_DID" 0 0 0 \
+              "$CUSTOM_SCHEMA_ID" "$AGENT_DID" \
+              "${VALIDATION_FEES:-0}" "${ISSUANCE_FEES:-0}" "${VERIFICATION_FEES:-0}" \
               --effective-from "$EFFECTIVE_FROM")
             sleep 21
 
-            # Self-create issuer permission (OPEN mode)
+            # Obtain ISSUER permission via VP flow (ECOSYSTEM mode)
             check_balance "$USER_ACC"
-            EFFECTIVE_FROM=$(future_timestamp 15)
-            ISSUER_PERM=$(submit_tx "create_permission" "permission_id" \
-              veranad tx perm create-perm "$CUSTOM_SCHEMA_ID" issuer "$AGENT_DID" \
-              --effective-from "$EFFECTIVE_FROM")
-            sleep 21
+            START_RESULT=$(veranad tx perm start-perm-vp \
+              issuer "$ROOT_PERM" \
+              --did "$AGENT_DID" \
+              --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+              --fees "$FEES" --gas auto --node "$NODE_RPC" \
+              --output json -y 2>&1 | extract_tx_json)
+            START_TX_HASH=$(echo "$START_RESULT" | jq -r '.txhash // empty')
+            if [ -z "$START_TX_HASH" ]; then
+              echo "::error::Failed to start ISSUER VP. Output: $START_RESULT"
+              exit 1
+            fi
+            ok "VP start TX submitted: $START_TX_HASH"
+            sleep 8
+            ISSUER_PERM=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id")
+            if [ -z "$ISSUER_PERM" ]; then
+              sleep 6
+              ISSUER_PERM=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id")
+            fi
+            if [ -z "$ISSUER_PERM" ]; then
+              echo "::error::Could not extract permission ID from start-perm-vp"
+              exit 1
+            fi
+            ok "Validation process started: perm_id=$ISSUER_PERM"
+
+            # Validate ISSUER permission
+            check_balance "$USER_ACC"
+            VALIDATE_RESULT=$(veranad tx perm set-perm-vp-validated \
+              "$ISSUER_PERM" \
+              --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+              --fees "$FEES" --gas auto --node "$NODE_RPC" \
+              --output json -y 2>&1 | extract_tx_json)
+            VALIDATE_TX_HASH=$(echo "$VALIDATE_RESULT" | jq -r '.txhash // empty')
+            if [ -z "$VALIDATE_TX_HASH" ]; then
+              echo "::error::Failed to validate ISSUER perm. Output: $VALIDATE_RESULT"
+              exit 1
+            fi
+            sleep 6
+            ok "ISSUER permission validated: perm_id=$ISSUER_PERM"
 
             # Create VTJSC for custom schema
             curl -sf -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
               -H 'Content-Type: application/json' \
-              -d "{\"schemaBaseId\": \"custom\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}"
+              -d "{\"schemaBaseId\": \"${CUSTOM_SCHEMA_BASE_ID:-example}\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}"
 
             ok "Trust Registry created: ID=$TRUST_REG_ID, Schema=$CUSTOM_SCHEMA_ID"
 
             # Optionally set up AnonCreds credential definition
-            if [ "${ANONCREDS_ENABLED:-false}" = "true" ]; then
+            if [ "${ENABLE_ANONCREDS:-false}" = "true" ]; then
               log "Setting up AnonCreds credential definition..."
-              ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/anoncreds/credential-definitions" \
+              VTJSC_VPR_REF="vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}"
+              VTJSC_CRED_ID=$(curl -sf "${ADMIN_API}/v1/vt/json-schema-credentials" \
+                | jq -r --arg sid "$VTJSC_VPR_REF" '.data[] | select(.schemaId == $sid) | .credential.id')
+              if [ -z "$VTJSC_CRED_ID" ]; then
+                echo "::error::Could not find VTJSC for schema $CUSTOM_SCHEMA_ID"
+                exit 1
+              fi
+              ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/credential-types" \
                 -H 'Content-Type: application/json' \
-                -d "{\"tag\": \"default\", \"schemaId\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}")
+                -d "{\"name\": \"${ANONCREDS_NAME:-example}\", \"version\": \"${ANONCREDS_VERSION:-1.0}\", \"relatedJsonSchemaCredentialId\": \"${VTJSC_CRED_ID}\", \"supportRevocation\": ${ANONCREDS_SUPPORT_REVOCATION:-false}}")
               ok "AnonCreds credential definition created"
             fi
           fi
