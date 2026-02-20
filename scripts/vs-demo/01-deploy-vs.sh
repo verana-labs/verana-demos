@@ -44,6 +44,9 @@ VS_AGENT_ADMIN_PORT="${VS_AGENT_ADMIN_PORT:-3000}"
 VS_AGENT_PUBLIC_PORT="${VS_AGENT_PUBLIC_PORT:-3001}"
 VS_AGENT_DATA_DIR="${VS_AGENT_DATA_DIR:-$(pwd)/vs-agent-demo-data}"
 
+# Service label (used as agent display name)
+SERVICE_NAME="${SERVICE_NAME:-Example Verana Service}"
+
 # CLI account
 USER_ACC="${USER_ACC:-vs-demo-admin}"
 
@@ -65,40 +68,47 @@ ADMIN_API="http://localhost:${VS_AGENT_ADMIN_PORT}"
 
 log "Step 1: Deploy VS Agent"
 
-# Pull image
-log "Pulling VS Agent image: $VS_AGENT_IMAGE"
-docker pull "$VS_AGENT_IMAGE"
+# Clean up any previous instance
+docker rm -f "$VS_AGENT_CONTAINER_NAME" 2>/dev/null || true
 
-# Start ngrok tunnel
-log "Starting ngrok tunnel on port $VS_AGENT_PUBLIC_PORT..."
-ngrok http "$VS_AGENT_PUBLIC_PORT" --log=stdout > /tmp/ngrok.log 2>&1 &
+# Pull the image (amd64 for Apple Silicon compatibility)
+log "Pulling VS Agent image..."
+docker pull --platform linux/amd64 "$VS_AGENT_IMAGE" 2>&1 | tail -1
+
+# Start ngrok tunnel for the public port
+log "Starting ngrok tunnel on port ${VS_AGENT_PUBLIC_PORT}..."
+pkill -f "ngrok http ${VS_AGENT_PUBLIC_PORT}" 2>/dev/null || true
+sleep 1
+ngrok http "$VS_AGENT_PUBLIC_PORT" --log=stdout > /tmp/ngrok-vs-demo.log 2>&1 &
 NGROK_PID=$!
-sleep 3
+sleep 5
 
-NGROK_URL=$(curl -sf http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-if [ -z "$NGROK_URL" ] || [ "$NGROK_URL" = "null" ]; then
-  err "Could not get ngrok URL. Is ngrok running?"
+NGROK_URL=$(curl -sf http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url // empty')
+if [ -z "$NGROK_URL" ]; then
+  err "Failed to get ngrok URL. Is ngrok installed and authenticated?"
   exit 1
 fi
-ok "ngrok URL: $NGROK_URL"
+NGROK_DOMAIN=$(echo "$NGROK_URL" | sed 's|https://||')
+ok "ngrok tunnel: $NGROK_URL (domain: $NGROK_DOMAIN)"
 
 # Start VS Agent container
 log "Starting VS Agent container..."
 mkdir -p "$VS_AGENT_DATA_DIR"
-docker run -d \
-  --name "$VS_AGENT_CONTAINER_NAME" \
-  -p "${VS_AGENT_ADMIN_PORT}:3000" \
+docker run --platform linux/amd64 -d \
   -p "${VS_AGENT_PUBLIC_PORT}:3001" \
-  -v "${VS_AGENT_DATA_DIR}:/data" \
-  -e "VS_AGENT_PUBLIC_URL=${NGROK_URL}" \
-  -e "VS_AGENT_DATA_DIR=/data" \
+  -p "${VS_AGENT_ADMIN_PORT}:3000" \
+  -v "${VS_AGENT_DATA_DIR}:/root/.afj" \
+  -e "AGENT_PUBLIC_DID=did:webvh:${NGROK_DOMAIN}" \
+  -e "AGENT_LABEL=${SERVICE_NAME}" \
+  -e "ENABLE_PUBLIC_API_SWAGGER=true" \
+  --name "$VS_AGENT_CONTAINER_NAME" \
   "$VS_AGENT_IMAGE"
 
 ok "VS Agent container started: $VS_AGENT_CONTAINER_NAME"
 
 # Wait for the agent to initialize
-log "Waiting for VS Agent to initialize..."
-if wait_for_agent "$ADMIN_API" 45; then
+log "Waiting for VS Agent to initialize (up to 180s)..."
+if wait_for_agent "$ADMIN_API" 90; then
   ok "VS Agent is ready"
 else
   err "VS Agent did not start within timeout"
