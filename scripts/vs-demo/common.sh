@@ -162,7 +162,7 @@ wait_for_agent() {
   local admin_api=$1
   local max_retries=${2:-30}
   local i=0
-  while [ $i -lt $max_retries ]; do
+  while [ $i -lt "$max_retries" ]; do
     if curl -sf "${admin_api}/v1/agent" > /dev/null 2>&1; then
       return 0
     fi
@@ -634,7 +634,7 @@ setup_veranad_account() {
     echo "  │  Faucet:  $faucet_url"
     echo "  └─────────────────────────────────────────────────────────────┘"
     echo ""
-    read -p "  Press Enter once the account is funded (or Ctrl+C to abort)... "
+    read -rp "  Press Enter once the account is funded (or Ctrl+C to abort)... "
 
     balance=$(veranad q bank balances "$USER_ACC_ADDR" --node "$NODE_RPC" --output json 2>/dev/null \
       | jq -r '.balances[] | select(.denom == "uvna") | .amount // "0"' 2>/dev/null || echo "0")
@@ -751,6 +751,6 @@ has_trust_registry_for_schema() {
 # Usage: future_timestamp [seconds]
 future_timestamp() {
   local seconds=${1:-15}
-  date -u -v+${seconds}S +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+  date -u -v+"${seconds}"S +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
     || date -u -d "+${seconds} seconds" +"%Y-%m-%dT%H:%M:%SZ"
 }
