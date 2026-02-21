@@ -1,4 +1,4 @@
-# VS Demo — Deploy a Verifiable Service and Create a Trust Registry
+# Verana Demos — Deploy a Verifiable Service and Create a Trust Registry
 
 Deploy a **Verifiable Service (VS) Agent** on the Verana network, obtain ecosystem credentials, and create your own Trust Registry.
 
@@ -59,10 +59,11 @@ chmod +x scripts/vs-demo/*.sh
 
 ### Prerequisites
 
-Add these **secrets** to the repository:
+1. **Fork** the repository to your own GitHub account or organization.
 
-- `OVH_KUBECONFIG` — kubeconfig for the target K8s cluster (plain text)
-- `VS_DEMO_MNEMONIC` — BIP-39 mnemonic for the veranad account
+2. Add these **secrets** to the forked repository:
+   - `OVH_KUBECONFIG` — kubeconfig for the target K8s cluster (plain text)
+   - `VS_DEMO_MNEMONIC` — BIP-39 mnemonic for the veranad account
 
 ### Deploy a new service
 
