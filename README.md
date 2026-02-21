@@ -4,12 +4,13 @@ Deploy a **Verifiable Service (VS) Agent** on the Verana network, obtain ecosyst
 
 ## Overview
 
-The demo is split into two parts:
+The demo is split into three steps:
 
-1. **Part 1** — Obtain an Organization credential from the ECS TR and self-issue a Service credential.
-2. **Part 2** — Create a Trust Registry with a custom credential schema, with optional AnonCreds support.
+1. **Step 1 — Deploy VS Agent** — Start a VS Agent locally (Docker + ngrok) or via Helm (CI/CD).
+2. **Step 2 — Get ECS Credentials** — Obtain an Organization credential from the ECS Trust Registry and self-issue a Service credential.
+3. **Step 3 — Create Trust Registry** — Create a Trust Registry with a custom credential schema, with optional AnonCreds support.
 
-Both parts support **devnet** and **testnet** (identical ECS configuration).
+All steps support **devnet** and **testnet** (identical ECS configuration).
 
 ## Repository Structure
 
@@ -19,9 +20,10 @@ vs/
 ├── config.env        # All configuration (org, service, TR, AnonCreds)
 └── schema.json       # JSON schema for the Trust Registry
 scripts/vs-demo/
-├── common.sh         # Shared helpers
-├── 01-deploy-vs.sh   # Part 1: Deploy + ECS credentials (local)
-└── 02-create-trust-registry.sh  # Part 2: Trust Registry (local)
+├── common.sh                    # Shared helpers
+├── 01-deploy-vs.sh              # Step 1: Deploy VS Agent (local)
+├── 02-get-ecs-credentials.sh    # Step 2: Obtain ECS credentials (local)
+└── 03-create-trust-registry.sh  # Step 3: Create Trust Registry (local)
 ```
 
 ## Local Usage (Docker + ngrok)
@@ -43,11 +45,14 @@ cd verana-demos
 source vs/config.env
 chmod +x scripts/vs-demo/*.sh
 
-# Part 1: Deploy VS Agent + obtain ECS credentials
+# Step 1: Deploy VS Agent (Docker + ngrok)
 ./scripts/vs-demo/01-deploy-vs.sh
 
-# Part 2: Create Trust Registry
-./scripts/vs-demo/02-create-trust-registry.sh
+# Step 2: Obtain Organization + Service credentials from ECS TR
+./scripts/vs-demo/02-get-ecs-credentials.sh
+
+# Step 3: Create Trust Registry with custom schema
+./scripts/vs-demo/03-create-trust-registry.sh
 ```
 
 ## CI/CD Usage (GitHub Actions)
@@ -80,7 +85,7 @@ Add these **secrets** to the repository:
 
 3. **Push** the branch and **run the workflow** from the Actions tab:
    - Select your `vs/testnet-my-issuer` branch
-   - Choose a step: `deploy`, `setup-part1`, `setup-part2`, or `all`
+   - Choose a step: `deploy`, `get-ecs-credentials`, `create-trust-registry`, or `all`
 
 The workflow:
 
@@ -96,8 +101,8 @@ The workflow:
 | Step | Description |
 | --- | --- |
 | `deploy` | Install/upgrade VS Agent via Helm only |
-| `setup-part1` | Obtain Organization + Service credentials from ECS TR |
-| `setup-part2` | Create Trust Registry, schema, permissions, VTJSC, optional AnonCreds |
+| `get-ecs-credentials` | Obtain Organization + Service credentials from ECS TR |
+| `create-trust-registry` | Create Trust Registry, schema, permissions, VTJSC, optional AnonCreds |
 | `all` | Run all steps in sequence |
 
 ## Configuration Reference
@@ -134,7 +139,7 @@ All configuration lives in `vs/config.env`. See that file for the complete list 
          │
          ▼
 ┌─────────────────────┐
-│   Verana Blockchain │
+│   Verana Blockchain  │
 │   (VPR)             │
 │                     │
 │  • Trust Registry   │
