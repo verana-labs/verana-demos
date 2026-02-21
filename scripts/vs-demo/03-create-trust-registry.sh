@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 02-create-trust-registry.sh — Create a Trust Registry for a custom schema
+# 03-create-trust-registry.sh — Create a Trust Registry for a custom schema
 # =============================================================================
 #
 # This script creates a Trust Registry on-chain for a VS Agent that was
-# previously set up by 01-deploy-vs.sh. It registers a custom credential
-# schema (e.g., example.json), creates root and issuer permissions, creates
-# a VTJSC, and optionally configures an AnonCreds credential definition.
+# previously set up by 01-deploy-vs.sh + 02-get-ecs-credentials.sh.
+# It registers a custom credential schema (e.g., vs/schema.json), creates
+# root and issuer permissions, creates a VTJSC, and optionally configures
+# an AnonCreds credential definition.
+#
+# Idempotent: if the DID already owns a trust registry with an identical
+# schema (compared after removing $id and canonizing), the script exits
+# gracefully without creating duplicates.
 #
 # Supports both devnet and testnet.
 #
 # Prerequisites:
-#   - 01-deploy-vs.sh completed successfully (VS Agent running, vs-demo-ids.env exists)
-#   - veranad binary
+#   - VS Agent running (01-deploy-vs.sh completed, or Helm-deployed)
+#   - 02-get-ecs-credentials.sh completed
+#   - veranad binary with funded account
 #   - curl, jq
 #
 # Usage:
-#   source my-vs.env
-#   ./scripts/vs-demo/02-create-trust-registry.sh
+#   source vs-demo-ids.env
+#   ./scripts/vs-demo/03-create-trust-registry.sh
 #
 # =============================================================================
 
@@ -34,7 +40,7 @@ source "${SCRIPT_DIR}/common.sh"
 # Network: devnet or testnet
 NETWORK="${NETWORK:-testnet}"
 
-# VS Demo IDs from Part 1
+# VS Demo IDs from previous steps
 VS_IDS_FILE="${VS_IDS_FILE:-vs-demo-ids.env}"
 
 # Custom schema configuration
@@ -60,7 +66,7 @@ ANONCREDS_NAME="${ANONCREDS_NAME:-${CUSTOM_SCHEMA_BASE_ID}}"
 ANONCREDS_VERSION="${ANONCREDS_VERSION:-1.0}"
 ANONCREDS_SUPPORT_REVOCATION="${ANONCREDS_SUPPORT_REVOCATION:-false}"
 
-# Output file (append to Part 1 output)
+# Output file (append to previous steps' output)
 OUTPUT_FILE="${OUTPUT_FILE:-vs-demo-ids.env}"
 
 # ---------------------------------------------------------------------------
@@ -71,7 +77,7 @@ set_network_vars "$NETWORK"
 log "Network: $NETWORK (chain: $CHAIN_ID)"
 
 # ---------------------------------------------------------------------------
-# Load Part 1 IDs
+# Load IDs from previous steps
 # ---------------------------------------------------------------------------
 
 if [ -f "$VS_IDS_FILE" ]; then
@@ -81,11 +87,11 @@ if [ -f "$VS_IDS_FILE" ]; then
   ok "IDs loaded"
 else
   err "VS IDs file not found: $VS_IDS_FILE"
-  err "Run 01-deploy-vs.sh first."
+  err "Run 01-deploy-vs.sh and 02-get-ecs-credentials.sh first."
   exit 1
 fi
 
-# Validate required variables from Part 1
+# Validate required variables
 AGENT_DID="${AGENT_DID:?AGENT_DID is required (check $VS_IDS_FILE)}"
 USER_ACC="${USER_ACC:?USER_ACC is required (check $VS_IDS_FILE)}"
 VS_AGENT_ADMIN_PORT="${VS_AGENT_ADMIN_PORT:-3000}"
@@ -95,11 +101,49 @@ ADMIN_API="http://localhost:${VS_AGENT_ADMIN_PORT}"
 # Default registry URL to the ngrok URL if not set
 TR_REGISTRY_URL="${TR_REGISTRY_URL:-${NGROK_URL:-}}"
 
+# ---------------------------------------------------------------------------
+# Load and check schema
+# ---------------------------------------------------------------------------
+
+if [ -n "$CUSTOM_SCHEMA_URL" ]; then
+  log "Downloading schema from $CUSTOM_SCHEMA_URL..."
+  SCHEMA_JSON=$(download_schema "$CUSTOM_SCHEMA_URL")
+  if [ -z "$SCHEMA_JSON" ]; then
+    err "Failed to download schema from $CUSTOM_SCHEMA_URL"
+    exit 1
+  fi
+  ok "Schema downloaded from URL"
+elif [ -f "$CUSTOM_SCHEMA_FILE" ]; then
+  log "Reading schema from $CUSTOM_SCHEMA_FILE..."
+  SCHEMA_JSON=$(jq -c '.' "$CUSTOM_SCHEMA_FILE")
+  ok "Schema loaded from file"
+else
+  err "No schema found. Set CUSTOM_SCHEMA_URL or provide vs/schema.json"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Check if a trust registry already exists for this schema
+# ---------------------------------------------------------------------------
+
+log "Checking if a trust registry already exists for this schema..."
+if EXISTING=$(has_trust_registry_for_schema "$AGENT_DID" "$SCHEMA_JSON"); then
+  EXISTING_TR_ID=$(echo "$EXISTING" | awk '{print $1}')
+  EXISTING_CS_ID=$(echo "$EXISTING" | awk '{print $2}')
+  ok "Trust registry already exists for this schema (TR=$EXISTING_TR_ID, CS=$EXISTING_CS_ID)"
+  ok "Skipping trust registry creation — nothing to do."
+  exit 0
+fi
+ok "No existing trust registry found for this schema — proceeding with creation"
+
 # =============================================================================
 # STEP 1: Create Trust Registry on-chain
 # =============================================================================
 
 log "Step 1: Create Trust Registry on-chain"
+
+# Verify account has funds before on-chain transactions
+check_balance "$USER_ACC"
 
 # Auto-calculate EGF digest if not provided
 if [ -z "$EGF_DOC_DIGEST" ]; then
@@ -121,25 +165,10 @@ ok "Trust Registry created with ID: $TRUST_REG_ID"
 
 log "Step 2: Create credential schema"
 
-if [ -n "$CUSTOM_SCHEMA_URL" ]; then
-  log "Downloading schema from $CUSTOM_SCHEMA_URL..."
-  SCHEMA_JSON=$(download_schema "$CUSTOM_SCHEMA_URL")
-  if [ -z "$SCHEMA_JSON" ]; then
-    err "Failed to download schema from $CUSTOM_SCHEMA_URL"
-    exit 1
-  fi
-  ok "Schema downloaded from URL"
-elif [ -f "$CUSTOM_SCHEMA_FILE" ]; then
-  log "Reading schema from $CUSTOM_SCHEMA_FILE..."
-  SCHEMA_JSON=$(jq -c '.' "$CUSTOM_SCHEMA_FILE")
-  ok "Schema loaded from file"
-else
-  err "No schema found. Set CUSTOM_SCHEMA_URL or provide vs/schema.json"
-  exit 1
-fi
-
 # issuer_mode=ECOSYSTEM (3), verifier_mode=OPEN (1)
 log "Creating schema (issuer_mode=ECOSYSTEM, verifier_mode=OPEN)..."
+
+check_balance "$USER_ACC"
 
 CUSTOM_SCHEMA_ID=$(submit_tx "create_credential_schema" "credential_schema_id" \
   veranad tx cs create-credential-schema "$TRUST_REG_ID" "$SCHEMA_JSON" \
@@ -157,6 +186,8 @@ ok "Schema created with ID: $CUSTOM_SCHEMA_ID"
 # =============================================================================
 
 log "Step 3: Create root permission"
+
+check_balance "$USER_ACC"
 
 EFFECTIVE_FROM=$(future_timestamp 15)
 log "Creating root permission (effective from: $EFFECTIVE_FROM)..."
@@ -179,6 +210,8 @@ ok "Root permission should now be active"
 # =============================================================================
 
 log "Step 4: Obtain ISSUER permission (ECOSYSTEM VP flow)"
+
+check_balance "$USER_ACC"
 
 # 4a. Start the validation process
 log "Starting ISSUER validation process..."
@@ -211,6 +244,9 @@ ok "Validation process started: perm_id=$ISSUER_PERM_ID"
 
 # 4b. Validate (ecosystem authority approves — in this demo, same account)
 log "Validating ISSUER permission..."
+
+check_balance "$USER_ACC"
+
 VALIDATE_RESULT=$(veranad tx perm set-perm-vp-validated \
   "$ISSUER_PERM_ID" \
   --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
@@ -304,14 +340,18 @@ else
 fi
 
 # =============================================================================
-# Save IDs (append to Part 1 output)
+# Save IDs (append to output file)
 # =============================================================================
 
 log "Appending Trust Registry IDs to ${OUTPUT_FILE}"
 
+# Remove previous TR section if re-running
+sed -i.bak '/^# Trust Registry/,/^$/d' "$OUTPUT_FILE" 2>/dev/null || true
+rm -f "${OUTPUT_FILE}.bak"
+
 cat >> "$OUTPUT_FILE" <<EOF
 
-# Trust Registry (Part 2)
+# Trust Registry (Part 3)
 TRUST_REG_ID=${TRUST_REG_ID}
 CUSTOM_SCHEMA_URL=${CUSTOM_SCHEMA_URL}
 CUSTOM_SCHEMA_ID=${CUSTOM_SCHEMA_ID}
@@ -326,7 +366,7 @@ ok "IDs saved to ${OUTPUT_FILE}"
 # Summary
 # =============================================================================
 
-log "Part 2 complete!"
+log "Trust Registry created!"
 echo ""
 echo "  Trust Registry ID  : $TRUST_REG_ID"
 echo "  Schema ID          : $CUSTOM_SCHEMA_ID"
