@@ -1,7 +1,7 @@
 {
   "$id": "https://verana-labs.github.io/verifiable-trust-spec/schemas/v4/example.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Example Credential",
+  "title": "Example WS1 Credential",
   "description": "An example credential schema for demonstrating Verana Trust Registry capabilities.",
   "type": "object",
   "properties": {
