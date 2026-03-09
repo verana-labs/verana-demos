@@ -70,6 +70,7 @@ log "Step 1: Deploy VS Agent"
 
 # Clean up any previous instance
 docker rm -f "$VS_AGENT_CONTAINER_NAME" 2>/dev/null || true
+rm -rf "${VS_AGENT_DATA_DIR}/data/wallet"
 
 # Pull the image (amd64 for Apple Silicon compatibility)
 log "Pulling VS Agent image..."
