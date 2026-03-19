@@ -72,9 +72,17 @@ log "Step 1: Deploy VS Agent"
 docker rm -f "$VS_AGENT_CONTAINER_NAME" 2>/dev/null || true
 rm -rf "${VS_AGENT_DATA_DIR}/data/wallet"
 
-# Pull the image (amd64 for Apple Silicon compatibility)
+# Pull the image; if pull fails (e.g. local-only image or no registry access),
+# fall back to the locally cached version.
 log "Pulling VS Agent image..."
-docker pull --platform linux/amd64 "$VS_AGENT_IMAGE" 2>&1 | tail -1
+if ! docker pull --platform linux/amd64 "$VS_AGENT_IMAGE" 2>&1 | tail -1; then
+  if docker image inspect "$VS_AGENT_IMAGE" > /dev/null 2>&1; then
+    warn "Pull failed — using locally cached image: $VS_AGENT_IMAGE"
+  else
+    err "Pull failed and no local image found for: $VS_AGENT_IMAGE"
+    exit 1
+  fi
+fi
 
 # Start ngrok tunnel for the public port
 log "Starting ngrok tunnel on port ${VS_AGENT_PUBLIC_PORT}..."
