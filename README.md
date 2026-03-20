@@ -1,29 +1,41 @@
 # Verana Demos — Deploy a Verifiable Service and Create a Trust Registry
 
-Deploy a **Verifiable Service (VS) Agent** on the Verana network, obtain ecosystem credentials, and create your own Trust Registry.
+Deploy a **Verifiable Service (VS) Agent** on the Verana network, obtain ecosystem credentials, create your own Trust Registry, and run demo services for credential issuance and verification.
 
 ## Overview
 
-The demo is split into three steps:
+The demo includes:
 
-1. **Step 1 — Deploy VS Agent** — Start a VS Agent locally (Docker + ngrok) or via Helm (CI/CD).
-2. **Step 2 — Get ECS Credentials** — Obtain an Organization credential from the ECS Trust Registry and self-issue a Service credential.
-3. **Step 3 — Create Trust Registry** — Create a Trust Registry with a custom credential schema, with optional AnonCreds support.
+1. **Issuer VS-Agent** — Deploy a VS Agent, obtain ECS credentials, create a Trust Registry with a custom schema.
+2. **Issuer Chatbot** — DIDComm chatbot that collects attributes and issues AnonCreds credentials via the Issuer VS-Agent.
+3. **Web Verifier** — Website with QR code for OOB presentation requests; displays verified credential attributes.
+4. **Verifier Chatbot** — DIDComm chatbot that requests and verifies credential presentations via a Verifier VS-Agent.
 
-All steps support **devnet** and **testnet** (identical ECS configuration).
+All services support **devnet** and **testnet**.
 
 ## Repository Structure
 
 ```text
 vs/
-├── deployment.yaml   # Helm chart values (same format as verana-deploy)
-├── config.env        # All configuration (org, service, TR, AnonCreds)
-└── schema.json       # JSON schema for the Trust Registry
-scripts/vs-demo/
-├── common.sh                    # Shared helpers
-├── 01-deploy-vs.sh              # Step 1: Deploy VS Agent (local)
-├── 02-get-ecs-credentials.sh    # Step 2: Obtain ECS credentials (local)
-└── 03-create-trust-registry.sh  # Step 3: Create Trust Registry (local)
+├── deployment.yaml        # Helm chart values for VS-Agent
+├── config.env             # Shared configuration (org, service, TR, AnonCreds)
+├── schema.json            # JSON schema for the Trust Registry
+├── issuer-chatbot.env     # Issuer Chatbot configuration
+├── web-verifier.env       # Web Verifier configuration
+└── verifier-chatbot.env   # Verifier Chatbot configuration
+issuer-chatbot/            # Issuer Chatbot Service (TypeScript)
+web-verifier/              # Web Verifier Service (TypeScript + inline frontend)
+verifier-chatbot/          # Verifier Chatbot Service (TypeScript)
+scripts/
+├── vs-demo/
+│   ├── common.sh                    # Shared helpers
+│   ├── 01-deploy-vs.sh              # Deploy VS Agent (local)
+│   ├── 02-get-ecs-credentials.sh    # Obtain ECS credentials (local)
+│   └── 03-create-trust-registry.sh  # Create Trust Registry (local)
+├── issuer-chatbot/start.sh          # Start Issuer Chatbot locally
+├── web-verifier/start.sh            # Start Web Verifier locally
+└── verifier-chatbot/start.sh        # Start Verifier Chatbot locally
+docker-compose.yml         # Local orchestration of all services
 ```
 
 ## Local Usage (Docker + ngrok)
@@ -33,9 +45,10 @@ scripts/vs-demo/
 - **Docker** with `linux/amd64` platform support
 - **ngrok** — authenticated ([ngrok.com](https://ngrok.com))
 - **veranad** — Verana blockchain CLI
+- **Node.js 20+** and **npm** (for chatbot and web verifier services)
 - **curl**, **jq**
 
-### Quick start
+### Quick start — VS Agent only
 
 ```bash
 git clone https://github.com/verana-labs/verana-demos.git
@@ -54,6 +67,38 @@ chmod +x scripts/vs-demo/*.sh
 # Step 3: Create Trust Registry with custom schema
 ./scripts/vs-demo/03-create-trust-registry.sh
 ```
+
+### Quick start — All services (Docker Compose)
+
+```bash
+export NGROK_DOMAIN=your-domain.ngrok-free.app
+export SERVICE_NAME="My Verana Service"
+docker compose up --build
+```
+
+This starts all five services: Issuer VS-Agent, Issuer Chatbot, Verifier VS-Agent, Web Verifier, and Verifier Chatbot.
+
+### Running individual services locally
+
+Each service has its own start script. Source the config files first, then run:
+
+```bash
+source vs/config.env
+
+# Issuer Chatbot (port 4000)
+source vs/issuer-chatbot.env
+./scripts/issuer-chatbot/start.sh
+
+# Web Verifier (port 4001)
+source vs/web-verifier.env
+./scripts/web-verifier/start.sh
+
+# Verifier Chatbot (port 4002)
+source vs/verifier-chatbot.env
+./scripts/verifier-chatbot/start.sh
+```
+
+See each service's `README.md` for details.
 
 ## CI/CD Usage (GitHub Actions)
 
@@ -97,14 +142,14 @@ The workflow:
 - Accesses the admin API via `kubectl port-forward` (same pattern as verana-deploy)
 - Registers the schema from `vs/schema.json` on-chain
 
-### Workflow steps
+### Workflows
 
-| Step | Description |
-| --- | --- |
-| `deploy` | Install/upgrade VS Agent via Helm only |
-| `get-ecs-credentials` | Obtain Organization + Service credentials from ECS TR |
-| `create-trust-registry` | Create Trust Registry, schema, permissions, VTJSC, optional AnonCreds |
-| `all` | Run all steps in sequence |
+| Workflow | File | Description |
+| --- | --- | --- |
+| Deploy VS Demo | `deploy-vs-demo.yml` | Deploy Issuer VS-Agent, get ECS credentials, create Trust Registry |
+| Deploy Issuer Chatbot | `deploy-issuer-chatbot.yml` | Build + deploy Issuer Chatbot, configure VS-Agent events URL |
+| Deploy Web Verifier | `deploy-web-verifier.yml` | Build + deploy Web Verifier with embedded Verifier VS-Agent |
+| Deploy Verifier Chatbot | `deploy-verifier-chatbot.yml` | Build + deploy Verifier Chatbot with embedded Verifier VS-Agent |
 
 ## Configuration Reference
 
@@ -122,35 +167,56 @@ All configuration lives in `vs/config.env`. See that file for the complete list 
 | `SERVICE_TYPE` | `IssuerService` | Service type |
 | `CUSTOM_SCHEMA_BASE_ID` | `example` | VTJSC base ID |
 | `EGF_DOC_URL` | governance-docs EGF | EGF URL (digest auto-calculated) |
-| `ENABLE_ANONCREDS` | `false` | Enable dual W3C + AnonCreds issuance |
+| `ENABLE_ANONCREDS` | `true` | Enable dual W3C + AnonCreds issuance |
 
 ## Architecture
 
 ```text
-┌─────────────────────┐         ┌─────────────────────────┐
-│   Your VS Agent     │         │   ECS Trust Registry    │
-│   (K8s / Docker)    │◄───────►│   (on-chain + VS Agent) │
-│                     │  issue  │                         │
-│  • did:webvh DID    │  org    │ • Org schema (ECOSYSTEM)│
-│  • Org VP (linked)  │  cred   │ • Service schema (OPEN) │
-│  • Service VP       │         │                         │
-│  • Custom VTJSC     │         └─────────────────────────┘
-│  • (AnonCreds)      │
-└─────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│   Verana Blockchain  │
-│   (VPR)             │
-│                     │
-│  • Trust Registry   │
-│  • Custom Schema    │
-│  • Root Permission  │
-│  • Issuer Permission│
-└─────────────────────┘
+                              ┌─────────────────────────┐
+                              │   ECS Trust Registry    │
+                              │   (on-chain + VS Agent) │
+                              └────────────┬────────────┘
+                                           │ issue org + svc creds
+                 ┌─────────────────────────┼─────────────────────────┐
+                 ▼                         │                         ▼
+┌──────────────────────────┐               │        ┌──────────────────────────┐
+│  Issuer VS-Agent         │               │        │  Verifier VS-Agent       │
+│  (Organization)          │               │        │  (Child Service)         │
+│                          │               │        │                          │
+│  • did:webvh DID         │  issue svc    │        │  • did:webvh DID         │
+│  • Org VP, Service VP    │  credential   │        │  • Service VP (linked)   │
+│  • Custom VTJSC          │◄──────────────┘        │  • Proof verification    │
+│  • AnonCreds cred def    │                        └────────┬─────┬──────────┘
+└────────────┬─────────────┘                                 │     │
+             │ webhooks                          webhooks     │     │ webhooks
+             ▼                                               ▼     ▼
+┌──────────────────────────┐        ┌────────────────┐  ┌──────────────────────┐
+│  Issuer Chatbot          │        │  Web Verifier  │  │  Verifier Chatbot    │
+│  (port 4000)             │        │  (port 4001)   │  │  (port 4002)         │
+│                          │        │                │  │                      │
+│  • Collect attributes    │        │  • QR code     │  │  • Request proof     │
+│  • Issue AnonCreds cred  │        │  • OOB invite  │  │  • Display attributes│
+│  • DIDComm messaging     │        │  • Poll result │  │  • DIDComm messaging │
+└──────────────────────────┘        └────────────────┘  └──────────────────────┘
 ```
 
+## Services
+
+| Service | Port | Description |
+| --- | --- | --- |
+| Issuer VS-Agent | 3000 (admin), 3001 (DIDComm) | Organization VS-Agent — issues credentials |
+| Issuer Chatbot | 4000 | DIDComm chatbot — collects attributes, issues AnonCreds credentials |
+| Verifier VS-Agent | 3000 (admin), 3001 (DIDComm) | Child VS-Agent — verifies presentations |
+| Web Verifier | 4001 | Web UI with QR code for OOB proof requests |
+| Verifier Chatbot | 4002 | DIDComm chatbot — requests and verifies credential presentations |
+
 ## Cleanup
+
+### Docker Compose
+
+```bash
+docker compose down -v
+```
 
 ### K8s
 
