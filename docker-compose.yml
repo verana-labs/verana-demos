@@ -1,0 +1,66 @@
+# =============================================================================
+# Verana Demos — Local Docker Compose
+# =============================================================================
+#
+# Orchestrates all demo services locally for development and testing.
+#
+# Prerequisites:
+#   - Docker and Docker Compose installed
+#   - Set NGROK_DOMAIN and SERVICE_NAME environment variables (or use defaults)
+#
+# Usage:
+#   export NGROK_DOMAIN=your-domain.ngrok-free.app
+#   export SERVICE_NAME="Example Verana Service"
+#   docker compose up --build
+#
+# =============================================================================
+
+services:
+  issuer-vs-agent:
+    image: veranalabs/vs-agent:latest
+    platform: linux/amd64
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    environment:
+      - AGENT_PUBLIC_DID=did:webvh:${NGROK_DOMAIN}
+      - AGENT_LABEL=${SERVICE_NAME:-Example Verana Service}
+      - EVENTS_BASE_URL=http://issuer-chatbot:4000
+
+  issuer-chatbot:
+    build: ./issuer-chatbot
+    ports:
+      - "4000:4000"
+    environment:
+      - VS_AGENT_ADMIN_URL=http://issuer-vs-agent:3000
+      - DATABASE_URL=sqlite:./data/sessions.db
+    depends_on:
+      - issuer-vs-agent
+
+  verifier-vs-agent:
+    image: veranalabs/vs-agent:latest
+    platform: linux/amd64
+    ports:
+      - "3002:3000"
+      - "3003:3001"
+    environment:
+      - EVENTS_BASE_URL=http://verifier-chatbot:4002
+
+  web-verifier:
+    build: ./web-verifier
+    ports:
+      - "4001:4001"
+    environment:
+      - VS_AGENT_ADMIN_URL=http://verifier-vs-agent:3000
+    depends_on:
+      - verifier-vs-agent
+
+  verifier-chatbot:
+    build: ./verifier-chatbot
+    ports:
+      - "4002:4002"
+    environment:
+      - VS_AGENT_ADMIN_URL=http://verifier-vs-agent:3000
+      - DATABASE_URL=sqlite:./data/sessions.db
+    depends_on:
+      - verifier-vs-agent
