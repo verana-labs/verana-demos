@@ -231,10 +231,10 @@ ok "VP start TX submitted: $START_TX_HASH"
 
 sleep 8
 
-ISSUER_PERM_ID=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id")
+ISSUER_PERM_ID=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id" || true)
 if [ -z "$ISSUER_PERM_ID" ]; then
   sleep 6
-  ISSUER_PERM_ID=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id")
+  ISSUER_PERM_ID=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id" || true)
 fi
 if [ -z "$ISSUER_PERM_ID" ]; then
   err "Could not extract permission ID from start-perm-vp"
