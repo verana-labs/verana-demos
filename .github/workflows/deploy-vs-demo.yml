@@ -328,17 +328,25 @@ jobs:
             # Optionally set up AnonCreds credential definition
             if [ "${ENABLE_ANONCREDS:-false}" = "true" ]; then
               log "Setting up AnonCreds credential definition..."
-              VTJSC_VPR_REF="vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}"
-              VTJSC_CRED_ID=$(curl -sf "${ADMIN_API}/v1/vt/json-schema-credentials" \
-                | jq -r --arg sid "$VTJSC_VPR_REF" '.data[] | select(.schemaId == $sid) | .credential.id')
-              if [ -z "$VTJSC_CRED_ID" ]; then
-                echo "::error::Could not find VTJSC for schema $CUSTOM_SCHEMA_ID"
-                exit 1
+
+              # Check if an AnonCreds cred def already exists
+              EXISTING_ANONCREDS=$(curl -sf "https://${INGRESS_HOST}/resources?resourceType=anonCredsCredDef" \
+                | jq -r '.data // [] | length')
+              if [ "${EXISTING_ANONCREDS:-0}" -gt 0 ]; then
+                ok "AnonCreds credential definition already exists — skipping creation"
+              else
+                VTJSC_VPR_REF="vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}"
+                VTJSC_CRED_ID=$(curl -sf "${ADMIN_API}/v1/vt/json-schema-credentials" \
+                  | jq -r --arg sid "$VTJSC_VPR_REF" '.data[] | select(.schemaId == $sid) | .credential.id')
+                if [ -z "$VTJSC_CRED_ID" ]; then
+                  echo "::error::Could not find VTJSC for schema $CUSTOM_SCHEMA_ID"
+                  exit 1
+                fi
+                ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/credential-types" \
+                  -H 'Content-Type: application/json' \
+                  -d "{\"name\": \"${ANONCREDS_NAME:-example}\", \"version\": \"${ANONCREDS_VERSION:-1.0}\", \"relatedJsonSchemaCredentialId\": \"${VTJSC_CRED_ID}\", \"supportRevocation\": ${ANONCREDS_SUPPORT_REVOCATION:-false}}")
+                ok "AnonCreds credential definition created"
               fi
-              ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/credential-types" \
-                -H 'Content-Type: application/json' \
-                -d "{\"name\": \"${ANONCREDS_NAME:-example}\", \"version\": \"${ANONCREDS_VERSION:-1.0}\", \"relatedJsonSchemaCredentialId\": \"${VTJSC_CRED_ID}\", \"supportRevocation\": ${ANONCREDS_SUPPORT_REVOCATION:-false}}")
-              ok "AnonCreds credential definition created"
             fi
           fi
 
