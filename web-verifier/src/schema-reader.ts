@@ -1,5 +1,31 @@
 import { VsAgentClient, VtjscEntry } from "./vs-agent-client";
 
+const VPR_NETWORK_MAP: Record<string, string> = {
+  "vna-testnet-1": "https://api.testnet.verana.network/verana",
+  "vna-devnet-1": "https://api.testnet.verana.network/verana",
+  "vna-mainnet-1": "https://api.verana.network/verana",
+};
+
+function resolveSchemaRef(ref: string): string {
+  if (ref.startsWith("http://") || ref.startsWith("https://")) {
+    return ref;
+  }
+  const match = ref.match(/^vpr:verana:([^/]+)\/(.+)$/);
+  if (!match) {
+    throw new Error(`Cannot resolve schema ref: ${ref}`);
+  }
+  const [, chainId, path] = match;
+  const baseUrl =
+    VPR_NETWORK_MAP[chainId] ||
+    process.env.VERANA_API_BASE_URL;
+  if (!baseUrl) {
+    throw new Error(
+      `Unknown chain ID "${chainId}" in VPR ref. Set VERANA_API_BASE_URL env var.`
+    );
+  }
+  return `${baseUrl}/${path}`;
+}
+
 export interface SchemaAttribute {
   name: string;
   type: string;
@@ -46,13 +72,19 @@ export async function discoverSchema(
     );
   }
 
-  const schemaResponse = await fetch(schemaUrl);
+  const resolvedUrl = resolveSchemaRef(schemaUrl);
+  console.log(`Fetching schema from ${resolvedUrl} (ref: ${schemaUrl})`);
+  const schemaResponse = await fetch(resolvedUrl);
   if (!schemaResponse.ok) {
     throw new Error(
-      `Failed to fetch schema from ${schemaUrl}: ${schemaResponse.status}`
+      `Failed to fetch schema from ${resolvedUrl}: ${schemaResponse.status}`
     );
   }
-  const schema = (await schemaResponse.json()) as Record<string, unknown>;
+  const raw = (await schemaResponse.json()) as Record<string, unknown>;
+  const schema: Record<string, unknown> =
+    typeof raw.schema === "string"
+      ? (JSON.parse(raw.schema) as Record<string, unknown>)
+      : raw;
 
   const csProps = (
     schema.properties as Record<string, unknown> | undefined
