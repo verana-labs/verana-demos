@@ -321,7 +321,8 @@ jobs:
             # Create VTJSC for custom schema
             curl -sf -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
               -H 'Content-Type: application/json' \
-              -d "{\"schemaBaseId\": \"${CUSTOM_SCHEMA_BASE_ID:-example}\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}"
+              -d "{\"schemaBaseId\": \"${CUSTOM_SCHEMA_BASE_ID:-example}\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}" \
+              -o /dev/null
 
             ok "Trust Registry created: ID=$TRUST_REG_ID, Schema=$CUSTOM_SCHEMA_ID"
 
@@ -331,7 +332,7 @@ jobs:
 
               # Check if an AnonCreds cred def already exists
               EXISTING_ANONCREDS=$(curl -sf "https://${INGRESS_HOST}/resources?resourceType=anonCredsCredDef" \
-                | jq -r '.data // [] | length')
+                | jq -r '. | length')
               if [ "${EXISTING_ANONCREDS:-0}" -gt 0 ]; then
                 ok "AnonCreds credential definition already exists — skipping creation"
               else
