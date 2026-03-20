@@ -8,8 +8,9 @@ interface ConnectionStateEvent {
 }
 
 interface MessageReceivedEvent {
-  connectionId: string;
+  timestamp?: string;
   message: {
+    connectionId: string;
     type?: string;
     content?: string;
     text?: string;
@@ -57,16 +58,21 @@ export function createWebhookRouter(chatbot: Chatbot): Router {
     try {
       const event = req.body as MessageReceivedEvent;
       const msg = event.message;
-      const connectionId = event.connectionId;
-
-      console.log(`Webhook: message-received — ${connectionId}`, msg.type);
-
+      const connectionId = msg.connectionId;
       const msgType = (msg.type || "").toLowerCase();
+
+      console.log(`Webhook: message-received — ${connectionId} type=${msgType}`);
+
+      // Ignore system messages (profile auto-disclosure, receipts, etc.)
+      if (msgType === "profile" || msgType === "receipts") {
+        res.status(200).json({ ok: true });
+        return;
+      }
 
       // Handle proof submission
       if (
-        msgType.includes("identityproofsubmitmessage") ||
-        msgType.includes("proofsubmit") ||
+        msgType === "identity-proof-submit" ||
+        msgType === "identity-proof-result" ||
         msg.submittedProofItems
       ) {
         const claims = extractClaims(msg);
@@ -74,9 +80,8 @@ export function createWebhookRouter(chatbot: Chatbot): Router {
       }
       // Handle menu selection
       else if (
-        msgType.includes("contextualmenuselectmessage") ||
-        msgType.includes("menuselectmessage") ||
-        msgType.includes("menuselect") ||
+        msgType === "contextual-menu-select" ||
+        msgType === "menu-select" ||
         msg.menuId ||
         msg.selectedOption
       ) {
@@ -85,11 +90,13 @@ export function createWebhookRouter(chatbot: Chatbot): Router {
         await chatbot.onMenuSelect(connectionId, menuId);
       }
       // Handle text message
-      else {
+      else if (msgType === "text") {
         const text = msg.content || msg.text || "";
         if (text) {
           await chatbot.onTextMessage(connectionId, text);
         }
+      } else {
+        console.log(`Ignoring unhandled message type: ${msgType}`);
       }
 
       res.status(200).json({ ok: true });

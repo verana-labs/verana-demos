@@ -97,11 +97,25 @@ export class VsAgentClient {
   }
 
   async sendMessage(params: SendMessageRequest): Promise<void> {
-    await this.request<unknown>("POST", "/messages", params);
+    await this.request<unknown>("POST", "/v1/message", {
+      type: "text",
+      connectionId: params.connectionId,
+      content: params.content,
+    });
+
+    if (params.contextualMenu) {
+      await this.request<unknown>("POST", "/v1/message", {
+        type: "contextual-menu-update",
+        connectionId: params.connectionId,
+        title: params.contextualMenu.title,
+        description: params.contextualMenu.description,
+        options: params.contextualMenu.options,
+      });
+    }
   }
 
   async sendProofRequest(params: SendProofRequestParams): Promise<void> {
-    await this.request<unknown>("POST", "/messages", params);
+    await this.request<unknown>("POST", "/v1/message", params);
   }
 
   async waitForReady(

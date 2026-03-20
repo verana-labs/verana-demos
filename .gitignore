@@ -6,3 +6,4 @@ scripts/vs-demo/vs-agent-demo-data/data/wallet/test-vs-agent/sqlite.db-shm
 node_modules/
 dist/
 data/
+scripts/vs-demo/vs-demo-ids.env

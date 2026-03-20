@@ -8,8 +8,9 @@ interface ConnectionStateEvent {
 }
 
 interface MessageReceivedEvent {
-  connectionId: string;
+  timestamp?: string;
   message: {
+    connectionId: string;
     type?: string;
     content?: string;
     text?: string;
@@ -52,29 +53,36 @@ export function createWebhookRouter(chatbot: Chatbot): Router {
     try {
       const event = req.body as MessageReceivedEvent;
       const msg = event.message;
-      const connectionId = event.connectionId;
-
-      console.log(`Webhook: message-received — ${connectionId}`, msg.type);
-
-      // Determine message type and route accordingly
+      const connectionId = msg.connectionId;
       const msgType = (msg.type || "").toLowerCase();
 
+      console.log(`Webhook: message-received — ${connectionId} type=${msgType}`);
+
+      // Ignore system messages (profile auto-disclosure, receipts, etc.)
       if (
-        msgType.includes("contextualmenuselectmessage") ||
-        msgType.includes("menuselectmessage") ||
-        msgType.includes("menuselect") ||
+        msgType === "profile" ||
+        msgType === "receipts"
+      ) {
+        res.status(200).json({ ok: true });
+        return;
+      }
+
+      if (
+        msgType === "contextual-menu-select" ||
+        msgType === "menu-select" ||
         msg.menuId ||
         msg.selectedOption
       ) {
         const menuId =
           msg.menuId || msg.selectedOption || msg.content || msg.text || "";
         await chatbot.onMenuSelect(connectionId, menuId);
-      } else {
-        // Treat as text message
+      } else if (msgType === "text") {
         const text = msg.content || msg.text || "";
         if (text) {
           await chatbot.onTextMessage(connectionId, text);
         }
+      } else {
+        console.log(`Ignoring unhandled message type: ${msgType}`);
       }
 
       res.status(200).json({ ok: true });
