@@ -59,7 +59,7 @@ jobs:
         run: |
           CHART_SOURCE=$(yq '.chartSource' /tmp/deployment-resolved.yaml)
           CHART_VERSION=$(yq '.chartVersion' /tmp/deployment-resolved.yaml)
-          CHART_NAMESPACE=$(yq '.chartNamespace' /tmp/deployment-resolved.yaml)
+          CHART_NAMESPACE="${{ secrets.K8S_NAMESPACE }}"
           RELEASE_NAME=$(yq '.name' /tmp/deployment-resolved.yaml)
           INGRESS_HOST=$(yq '.ingress.host' /tmp/deployment-resolved.yaml)
           echo "CHART_SOURCE=${CHART_SOURCE}" >> "$GITHUB_ENV"
@@ -98,7 +98,7 @@ jobs:
       - name: Deploy VS Agent via Helm
         if: inputs.step == 'deploy' || inputs.step == 'all'
         run: |
-          yq 'del(.chartSource, .chartVersion, .chartNamespace)' /tmp/deployment-resolved.yaml > /tmp/helm-values.yaml
+          yq 'del(.chartSource, .chartVersion)' /tmp/deployment-resolved.yaml > /tmp/helm-values.yaml
           yq -i '.didcommLabel = env(SERVICE_NAME)' /tmp/helm-values.yaml
           yq -i '.didcommInvitationImageUrl = env(SERVICE_LOGO_URL)' /tmp/helm-values.yaml
           helm upgrade --install "$RELEASE_NAME" "$CHART_SOURCE" \
