@@ -1,0 +1,50 @@
+# Issuer Chatbot VS Agent deployment — Helm chart values
+#
+# Network and service name are derived from the branch name.
+# The workflow substitutes __NETWORK__ and __VS_NAME__ placeholders at deploy time.
+chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
+chartVersion: v1.8.1
+
+chartNamespace: vna-__NETWORK__-1
+
+global:
+  domain: __NETWORK__.verana.network
+
+name: __VS_NAME__
+replicas: 1
+
+adminPort: 3000
+didcommPort: 3001
+eventsBaseUrl: "https://__VS_NAME__.__NETWORK__.verana.network"
+publicDidMethod: "webvh"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+ingress:
+  host: "__VS_NAME__.__NETWORK__.verana.network"
+  tlsSecret: "public.__VS_NAME__.__NETWORK__.verana.network-cert"
+  public:
+    enableCors: true
+  private:
+    enableCors: true
+    whitelistSourceRange: ""
+    tlsSecret: ""
+    host: ""
+
+extraEnv:
+  - name: ENABLE_PUBLIC_API_SWAGGER
+    value: "true"
+  - name: AGENT_LOG_LEVEL
+    value: "3"
+  - name: USE_CORS
+    value: "true"
+
+storage:
+  size: 1Gi
+  storageClassName: csi-cinder-high-speed

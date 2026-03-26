@@ -1,0 +1,358 @@
+name: Deploy Organization VS
+
+on:
+  workflow_dispatch:
+    inputs:
+      step:
+        description: "Which step to run"
+        required: true
+        type: choice
+        options:
+          - deploy
+          - get-ecs-credentials
+          - create-trust-registry
+          - all
+        default: all
+
+jobs:
+  deploy-organization-vs:
+    name: Deploy Organization VS Agent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate branch and extract network
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          if [[ ! "$BRANCH" =~ ^vs/(testnet|devnet)- ]]; then
+            echo "::error::Branch must match vs/testnet-<name> or vs/devnet-<name> (current: $BRANCH)"
+            exit 1
+          fi
+          SUFFIX="${BRANCH#vs/}"
+          NETWORK="${SUFFIX%%-*}"
+          VS_NAME="${SUFFIX#*-}"
+          echo "NETWORK=${NETWORK}" >> "$GITHUB_ENV"
+          echo "VS_NAME=${VS_NAME}" >> "$GITHUB_ENV"
+          echo "Branch: $BRANCH — Network: $NETWORK — Service: $VS_NAME"
+
+      - name: Load configuration
+        run: |
+          set -a
+          source organization-vs/config.env
+          set +a
+          while IFS= read -r line; do
+            key="${line%%=*}"
+            echo "${key}=${!key}" >> "$GITHUB_ENV"
+          done < <(grep -E '^[A-Z_]+=' organization-vs/config.env)
+
+      - name: Resolve deployment.yaml placeholders
+        run: |
+          sed -e "s/__NETWORK__/${NETWORK}/g" -e "s/__VS_NAME__/${VS_NAME}/g" \
+            organization-vs/deployment.yaml > /tmp/deployment-resolved.yaml
+          echo "--- Resolved deployment.yaml ---"
+          cat /tmp/deployment-resolved.yaml
+
+      - name: Parse deployment.yaml
+        run: |
+          CHART_SOURCE=$(yq '.chartSource' /tmp/deployment-resolved.yaml)
+          CHART_VERSION=$(yq '.chartVersion' /tmp/deployment-resolved.yaml)
+          CHART_NAMESPACE=$(yq '.chartNamespace' /tmp/deployment-resolved.yaml)
+          RELEASE_NAME=$(yq '.name' /tmp/deployment-resolved.yaml)
+          INGRESS_HOST=$(yq '.ingress.host' /tmp/deployment-resolved.yaml)
+          echo "CHART_SOURCE=${CHART_SOURCE}" >> "$GITHUB_ENV"
+          echo "CHART_VERSION=${CHART_VERSION}" >> "$GITHUB_ENV"
+          echo "CHART_NAMESPACE=${CHART_NAMESPACE}" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=${RELEASE_NAME}" >> "$GITHUB_ENV"
+          echo "INGRESS_HOST=${INGRESS_HOST}" >> "$GITHUB_ENV"
+          echo "Chart: $CHART_SOURCE@$CHART_VERSION → $CHART_NAMESPACE/$RELEASE_NAME"
+
+      - name: Generate Helm values
+        run: |
+          yq 'del(.chartSource, .chartVersion, .chartNamespace)' /tmp/deployment-resolved.yaml > /tmp/helm-values.yaml
+          yq -i '.didcommLabel = env(SERVICE_NAME)' /tmp/helm-values.yaml
+          yq -i '.didcommInvitationImageUrl = env(SERVICE_LOGO_URL)' /tmp/helm-values.yaml
+          # Conditionally expose admin API publicly
+          if [ "${EXPOSE_ADMIN_API}" = "true" ]; then
+            yq -i '.ingress.private.host = .ingress.host' /tmp/helm-values.yaml
+            yq -i '.ingress.private.tlsSecret = .ingress.tlsSecret' /tmp/helm-values.yaml
+          fi
+          echo "--- Helm values ---"
+          cat /tmp/helm-values.yaml
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          cat > ~/.kube/config <<'KUBEEOF'
+          ${{ secrets.OVH_KUBECONFIG }}
+          KUBEEOF
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.29.9'
+
+      - name: Install veranad
+        run: |
+          VERANAD_VERSION="v0.9.4"
+          curl -sfL "https://github.com/verana-labs/verana/releases/download/${VERANAD_VERSION}/veranad-linux-amd64" \
+            -o /usr/local/bin/veranad
+          chmod +x /usr/local/bin/veranad
+          veranad version
+
+      - name: Import account from mnemonic
+        run: |
+          echo "${{ secrets.VS_DEMO_MNEMONIC }}" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
+
+      # -----------------------------------------------------------------------
+      # DEPLOY: Install/upgrade VS Agent via Helm
+      # -----------------------------------------------------------------------
+      - name: Deploy VS Agent via Helm
+        if: inputs.step == 'deploy' || inputs.step == 'all'
+        run: |
+          helm upgrade --install "$RELEASE_NAME" "$CHART_SOURCE" \
+            --version "$CHART_VERSION" \
+            --namespace "$CHART_NAMESPACE" --create-namespace \
+            --values /tmp/helm-values.yaml \
+            --wait --timeout 300s
+
+      # -----------------------------------------------------------------------
+      # PORT-FORWARD: Access admin API via kubectl
+      # -----------------------------------------------------------------------
+      - name: Port-forward VS Agent admin API
+        if: inputs.step == 'get-ecs-credentials' || inputs.step == 'create-trust-registry' || inputs.step == 'all'
+        run: |
+          kubectl port-forward -n "$CHART_NAMESPACE" "svc/$RELEASE_NAME" 3000:3000 &
+          echo "PF_PID=$!" >> "$GITHUB_ENV"
+          sleep 5
+          curl -sf http://localhost:3000/v1/agent > /dev/null || {
+            echo "Port-forward failed — is the $RELEASE_NAME pod running in $CHART_NAMESPACE?"
+            exit 1
+          }
+          echo "Port-forward established"
+
+      # -----------------------------------------------------------------------
+      # GET-ECS-CREDENTIALS: Obtain Organization + Service credentials
+      # -----------------------------------------------------------------------
+      - name: "Get ECS credentials"
+        if: inputs.step == 'get-ecs-credentials' || inputs.step == 'all'
+        run: |
+          export ADMIN_API="http://localhost:3000"
+          source common/common.sh
+          set_network_vars "$NETWORK"
+
+          AGENT_INFO=$(curl -sf "${ADMIN_API}/v1/agent")
+          AGENT_DID=$(echo "$AGENT_INFO" | jq -r '.publicDid')
+          echo "AGENT_DID=${AGENT_DID}" >> "$GITHUB_ENV"
+          ok "Agent DID: $AGENT_DID"
+
+          # Discover Organization VTJSC from ECS TR DID document
+          ORG_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "organization")
+          ORG_JSC_URL=$(echo "$ORG_VTJSC_OUTPUT" | sed -n '1p')
+
+          # Discover Service VTJSC and schema ID from ECS TR DID document
+          SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
+          SERVICE_JSC_URL=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '1p')
+          CS_SERVICE_ID=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '2p')
+          echo "CS_SERVICE_ID=${CS_SERVICE_ID}" >> "$GITHUB_ENV"
+
+          # Clean up previous ECS credentials (linked VPs + VTJSCs)
+          cleanup_ecs_credentials "$ADMIN_API" "$ORG_JSC_URL" "$SERVICE_JSC_URL"
+
+          # Obtain Organization credential from ECS TR
+          ORG_LOGO_DATA_URI=$(download_logo_data_uri "$ORG_LOGO_URL")
+          SERVICE_LOGO_DATA_URI=$(download_logo_data_uri "$SERVICE_LOGO_URL")
+
+          ORG_CLAIMS=$(jq -n \
+            --arg id "$AGENT_DID" \
+            --arg name "$ORG_NAME" \
+            --arg logo "$ORG_LOGO_DATA_URI" \
+            --arg rid "$ORG_REGISTRY_ID" \
+            --arg addr "$ORG_ADDRESS" \
+            --arg cc "$ORG_COUNTRY" \
+            '{id: $id, name: $name, logo: $logo, registryId: $rid, address: $addr, countryCode: $cc}')
+
+          issue_remote_and_link "$ECS_TR_ADMIN_API" "$ADMIN_API" "organization" "$ORG_JSC_URL" "$AGENT_DID" "$ORG_CLAIMS"
+
+          # Ensure ISSUER permission for Service schema
+          if EXISTING_PERM=$(find_active_issuer_perm "$CS_SERVICE_ID" "$AGENT_DID"); then
+            ok "Active ISSUER permission already exists: $EXISTING_PERM — skipping creation"
+          else
+            log "No active ISSUER permission found — creating one"
+            check_balance "$USER_ACC"
+            EFFECTIVE_FROM=$(future_timestamp 15)
+            ISSUER_PERM_SERVICE=$(submit_tx "create_permission" "permission_id" \
+              veranad tx perm create-perm "$CS_SERVICE_ID" issuer "$AGENT_DID" \
+              --effective-from "$EFFECTIVE_FROM")
+            sleep 21
+          fi
+
+          # Self-issue Service credential
+          SERVICE_CLAIMS=$(jq -n \
+            --arg id "$AGENT_DID" \
+            --arg name "$SERVICE_NAME" \
+            --arg type "$SERVICE_TYPE" \
+            --arg desc "$SERVICE_DESCRIPTION" \
+            --arg logo "$SERVICE_LOGO_DATA_URI" \
+            --argjson age "$SERVICE_MIN_AGE" \
+            --arg terms "$SERVICE_TERMS" \
+            --arg privacy "$SERVICE_PRIVACY" \
+            '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
+
+          issue_remote_and_link "$ADMIN_API" "$ADMIN_API" "service" "$SERVICE_JSC_URL" "$AGENT_DID" "$SERVICE_CLAIMS"
+
+      # -----------------------------------------------------------------------
+      # CREATE-TRUST-REGISTRY: Create Trust Registry with custom schema
+      # -----------------------------------------------------------------------
+      - name: "Create Trust Registry"
+        if: inputs.step == 'create-trust-registry' || inputs.step == 'all'
+        run: |
+          export ADMIN_API="http://localhost:3000"
+          source common/common.sh
+          set_network_vars "$NETWORK"
+
+          if [ -z "${AGENT_DID:-}" ]; then
+            AGENT_DID=$(curl -sf "${ADMIN_API}/v1/agent" | jq -r '.publicDid')
+          fi
+
+          # Load schema
+          if [ -n "${CUSTOM_SCHEMA_URL:-}" ]; then
+            SCHEMA_JSON=$(download_schema "$CUSTOM_SCHEMA_URL")
+          else
+            SCHEMA_JSON=$(jq -c '.' organization-vs/schema.json)
+          fi
+
+          # Check if a trust registry already exists for this schema
+          if EXISTING=$(has_trust_registry_for_schema "$AGENT_DID" "$SCHEMA_JSON"); then
+            EXISTING_TR_ID=$(echo "$EXISTING" | awk '{print $1}')
+            EXISTING_CS_ID=$(echo "$EXISTING" | awk '{print $2}')
+            ok "Trust registry already exists for this schema (TR=$EXISTING_TR_ID, CS=$EXISTING_CS_ID)"
+            ok "Skipping trust registry creation — nothing to do."
+          else
+            log "No existing trust registry found for this schema — creating resources"
+
+            EGF_DOC_DIGEST=$(compute_sri_digest "$EGF_DOC_URL")
+            ok "EGF digest: $EGF_DOC_DIGEST"
+
+            TR_REGISTRY_URL="https://${INGRESS_HOST}"
+
+            check_balance "$USER_ACC"
+            TRUST_REG_ID=$(submit_tx "create_trust_registry" "trust_registry_id" \
+              veranad tx tr create-trust-registry \
+              "$AGENT_DID" "${EGF_LANGUAGE:-en}" "$EGF_DOC_URL" "$EGF_DOC_DIGEST" \
+              --aka "$TR_REGISTRY_URL")
+
+            check_balance "$USER_ACC"
+            CUSTOM_SCHEMA_ID=$(submit_tx "create_credential_schema" "credential_schema_id" \
+              veranad tx cs create-credential-schema "$TRUST_REG_ID" "$SCHEMA_JSON" \
+              --issuer-grantor-validation-validity-period '{"value":0}' \
+              --verifier-grantor-validation-validity-period '{"value":0}' \
+              --issuer-validation-validity-period '{"value":0}' \
+              --verifier-validation-validity-period '{"value":0}' \
+              --holder-validation-validity-period '{"value":0}' \
+              3 1)
+
+            check_balance "$USER_ACC"
+            EFFECTIVE_FROM=$(future_timestamp 15)
+            ROOT_PERM=$(submit_tx "create_root_permission" "root_permission_id" \
+              veranad tx perm create-root-perm \
+              "$CUSTOM_SCHEMA_ID" "$AGENT_DID" \
+              "${VALIDATION_FEES:-0}" "${ISSUANCE_FEES:-0}" "${VERIFICATION_FEES:-0}" \
+              --effective-from "$EFFECTIVE_FROM")
+            sleep 21
+
+            # Obtain ISSUER permission via VP flow (ECOSYSTEM mode)
+            check_balance "$USER_ACC"
+            START_RESULT=$(veranad tx perm start-perm-vp \
+              issuer "$ROOT_PERM" \
+              --did "$AGENT_DID" \
+              --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+              --fees "$FEES" --gas auto --node "$NODE_RPC" \
+              --output json -y 2>&1 | extract_tx_json)
+            START_TX_HASH=$(echo "$START_RESULT" | jq -r '.txhash // empty')
+            if [ -z "$START_TX_HASH" ]; then
+              echo "::error::Failed to start ISSUER VP. Output: $START_RESULT"
+              exit 1
+            fi
+            ok "VP start TX submitted: $START_TX_HASH"
+            sleep 8
+            ISSUER_PERM=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id")
+            if [ -z "$ISSUER_PERM" ]; then
+              sleep 6
+              ISSUER_PERM=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id")
+            fi
+            if [ -z "$ISSUER_PERM" ]; then
+              echo "::error::Could not extract permission ID from start-perm-vp"
+              exit 1
+            fi
+            ok "Validation process started: perm_id=$ISSUER_PERM"
+
+            check_balance "$USER_ACC"
+            VALIDATE_RESULT=$(veranad tx perm set-perm-vp-validated \
+              "$ISSUER_PERM" \
+              --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+              --fees "$FEES" --gas auto --node "$NODE_RPC" \
+              --output json -y 2>&1 | extract_tx_json)
+            VALIDATE_TX_HASH=$(echo "$VALIDATE_RESULT" | jq -r '.txhash // empty')
+            if [ -z "$VALIDATE_TX_HASH" ]; then
+              echo "::error::Failed to validate ISSUER perm. Output: $VALIDATE_RESULT"
+              exit 1
+            fi
+            sleep 6
+            ok "ISSUER permission validated: perm_id=$ISSUER_PERM"
+
+            # Create VTJSC for custom schema
+            curl -sf -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
+              -H 'Content-Type: application/json' \
+              -d "{\"schemaBaseId\": \"${CUSTOM_SCHEMA_BASE_ID:-example}\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}" \
+              -o /dev/null
+
+            ok "Trust Registry created: ID=$TRUST_REG_ID, Schema=$CUSTOM_SCHEMA_ID"
+
+            # Optionally set up AnonCreds credential definition
+            if [ "${ENABLE_ANONCREDS:-false}" = "true" ]; then
+              log "Setting up AnonCreds credential definition..."
+
+              EXISTING_ANONCREDS=$(curl -sf "https://${INGRESS_HOST}/resources?resourceType=anonCredsCredDef" \
+                | jq -r '. | length')
+              if [ "${EXISTING_ANONCREDS:-0}" -gt 0 ]; then
+                ok "AnonCreds credential definition already exists — skipping creation"
+              else
+                VTJSC_VPR_REF="vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}"
+                VTJSC_CRED_ID=$(curl -sf "${ADMIN_API}/v1/vt/json-schema-credentials" \
+                  | jq -r --arg sid "$VTJSC_VPR_REF" '.data[] | select(.schemaId == $sid) | .credential.id')
+                if [ -z "$VTJSC_CRED_ID" ]; then
+                  echo "::error::Could not find VTJSC for schema $CUSTOM_SCHEMA_ID"
+                  exit 1
+                fi
+                ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/credential-types" \
+                  -H 'Content-Type: application/json' \
+                  -d "{\"name\": \"${ANONCREDS_NAME:-example}\", \"version\": \"${ANONCREDS_VERSION:-1.0}\", \"relatedJsonSchemaCredentialId\": \"${VTJSC_CRED_ID}\", \"supportRevocation\": ${ANONCREDS_SUPPORT_REVOCATION:-false}}")
+                ok "AnonCreds credential definition created"
+              fi
+            fi
+          fi
+
+      # -----------------------------------------------------------------------
+      # CLEANUP
+      # -----------------------------------------------------------------------
+      - name: Stop port-forward
+        if: always()
+        run: |
+          if [ -n "${PF_PID:-}" ]; then
+            kill "$PF_PID" 2>/dev/null || true
+          fi
+
+      # -----------------------------------------------------------------------
+      # SUMMARY
+      # -----------------------------------------------------------------------
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Organization VS" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${INGRESS_HOST:-}" ]; then
+            echo "- **VS Agent:** https://${INGRESS_HOST}/.well-known/did.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "- **Network:** ${NETWORK:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Service:** ${VS_NAME:-unknown}" >> "$GITHUB_STEP_SUMMARY"

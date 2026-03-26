@@ -1,0 +1,334 @@
+name: Deploy Issuer Chatbot VS
+
+on:
+  workflow_dispatch:
+    inputs:
+      step:
+        description: "Which step to run"
+        required: true
+        type: choice
+        options:
+          - deploy
+          - get-credentials
+          - deploy-chatbot
+          - all
+        default: all
+
+jobs:
+  deploy-issuer-chatbot-vs:
+    name: Deploy Issuer Chatbot VS Agent and Chatbot
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate branch and extract network
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          if [[ ! "$BRANCH" =~ ^vs/(testnet|devnet)- ]]; then
+            echo "::error::Branch must match vs/testnet-<name> or vs/devnet-<name> (current: $BRANCH)"
+            exit 1
+          fi
+          SUFFIX="${BRANCH#vs/}"
+          NETWORK="${SUFFIX%%-*}"
+          VS_NAME="${SUFFIX#*-}"
+          echo "NETWORK=${NETWORK}" >> "$GITHUB_ENV"
+          echo "VS_NAME=${VS_NAME}" >> "$GITHUB_ENV"
+          echo "Branch: $BRANCH — Network: $NETWORK — Service: $VS_NAME"
+
+      - name: Load configuration
+        run: |
+          set -a
+          source issuer-chatbot-vs/config.env
+          set +a
+          while IFS= read -r line; do
+            key="${line%%=*}"
+            echo "${key}=${!key}" >> "$GITHUB_ENV"
+          done < <(grep -E '^[A-Z_]+=' issuer-chatbot-vs/config.env)
+
+      - name: Resolve deployment.yaml placeholders
+        run: |
+          CHILD_VS_NAME="issuer-chatbot-${VS_NAME}"
+          sed -e "s/__NETWORK__/${NETWORK}/g" -e "s/__VS_NAME__/${CHILD_VS_NAME}/g" \
+            issuer-chatbot-vs/deployment.yaml > /tmp/deployment-resolved.yaml
+          echo "CHILD_VS_NAME=${CHILD_VS_NAME}" >> "$GITHUB_ENV"
+          echo "--- Resolved deployment.yaml ---"
+          cat /tmp/deployment-resolved.yaml
+
+      - name: Parse deployment.yaml
+        run: |
+          CHART_SOURCE=$(yq '.chartSource' /tmp/deployment-resolved.yaml)
+          CHART_VERSION=$(yq '.chartVersion' /tmp/deployment-resolved.yaml)
+          CHART_NAMESPACE=$(yq '.chartNamespace' /tmp/deployment-resolved.yaml)
+          RELEASE_NAME=$(yq '.name' /tmp/deployment-resolved.yaml)
+          INGRESS_HOST=$(yq '.ingress.host' /tmp/deployment-resolved.yaml)
+          echo "CHART_SOURCE=${CHART_SOURCE}" >> "$GITHUB_ENV"
+          echo "CHART_VERSION=${CHART_VERSION}" >> "$GITHUB_ENV"
+          echo "CHART_NAMESPACE=${CHART_NAMESPACE}" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=${RELEASE_NAME}" >> "$GITHUB_ENV"
+          echo "INGRESS_HOST=${INGRESS_HOST}" >> "$GITHUB_ENV"
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          cat > ~/.kube/config <<'KUBEEOF'
+          ${{ secrets.OVH_KUBECONFIG }}
+          KUBEEOF
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.29.9'
+
+      - name: Install veranad
+        run: |
+          VERANAD_VERSION="v0.9.4"
+          curl -sfL "https://github.com/verana-labs/verana/releases/download/${VERANAD_VERSION}/veranad-linux-amd64" \
+            -o /usr/local/bin/veranad
+          chmod +x /usr/local/bin/veranad
+          veranad version
+
+      - name: Import account from mnemonic
+        run: |
+          echo "${{ secrets.VS_DEMO_MNEMONIC }}" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
+
+      # -----------------------------------------------------------------------
+      # DEPLOY: Install/upgrade VS Agent via Helm
+      # -----------------------------------------------------------------------
+      - name: Deploy VS Agent via Helm
+        if: inputs.step == 'deploy' || inputs.step == 'all'
+        run: |
+          yq 'del(.chartSource, .chartVersion, .chartNamespace)' /tmp/deployment-resolved.yaml > /tmp/helm-values.yaml
+          yq -i '.didcommLabel = env(SERVICE_NAME)' /tmp/helm-values.yaml
+          yq -i '.didcommInvitationImageUrl = env(SERVICE_LOGO_URL)' /tmp/helm-values.yaml
+          helm upgrade --install "$RELEASE_NAME" "$CHART_SOURCE" \
+            --version "$CHART_VERSION" \
+            --namespace "$CHART_NAMESPACE" --create-namespace \
+            --values /tmp/helm-values.yaml \
+            --wait --timeout 300s
+
+      # -----------------------------------------------------------------------
+      # GET-CREDENTIALS: Obtain Service credential + ISSUER permission
+      # -----------------------------------------------------------------------
+      - name: Port-forward child VS Agent
+        if: inputs.step == 'get-credentials' || inputs.step == 'all'
+        run: |
+          kubectl port-forward -n "$CHART_NAMESPACE" "svc/$RELEASE_NAME" 3002:3000 &
+          echo "CHILD_PF_PID=$!" >> "$GITHUB_ENV"
+          sleep 5
+          curl -sf http://localhost:3002/v1/agent > /dev/null || {
+            echo "::error::Port-forward to child VS-Agent failed"
+            exit 1
+          }
+          echo "Port-forward to child VS-Agent on :3002"
+
+      - name: Port-forward organization VS Agent
+        if: inputs.step == 'get-credentials' || inputs.step == 'all'
+        run: |
+          kubectl port-forward -n "$CHART_NAMESPACE" "svc/${VS_NAME}" 3000:3000 &
+          echo "ORG_PF_PID=$!" >> "$GITHUB_ENV"
+          sleep 5
+          curl -sf http://localhost:3000/v1/agent > /dev/null || {
+            echo "::error::Port-forward to organization VS-Agent failed"
+            exit 1
+          }
+          echo "Port-forward to organization VS-Agent on :3000"
+
+      - name: Get Service credential and ISSUER permission
+        if: inputs.step == 'get-credentials' || inputs.step == 'all'
+        run: |
+          ORG_ADMIN_API="http://localhost:3000"
+          CHILD_ADMIN_API="http://localhost:3002"
+          source common/common.sh
+          set_network_vars "$NETWORK"
+
+          CHILD_DID=$(curl -sf "${CHILD_ADMIN_API}/v1/agent" | jq -r '.publicDid')
+          echo "Child DID: $CHILD_DID"
+
+          # Get Service credential from organization-vs
+          SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
+          SERVICE_JSC_URL=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '1p')
+
+          SERVICE_LOGO_DATA_URI=$(download_logo_data_uri "$SERVICE_LOGO_URL")
+
+          SERVICE_CLAIMS=$(jq -n \
+            --arg id "$CHILD_DID" \
+            --arg name "$SERVICE_NAME" \
+            --arg type "${SERVICE_TYPE:-IssuerService}" \
+            --arg desc "$SERVICE_DESCRIPTION" \
+            --arg logo "$SERVICE_LOGO_DATA_URI" \
+            --argjson age "${SERVICE_MIN_AGE:-0}" \
+            --arg terms "${SERVICE_TERMS:-}" \
+            --arg privacy "${SERVICE_PRIVACY:-}" \
+            '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
+
+          issue_remote_and_link "$ORG_ADMIN_API" "$CHILD_ADMIN_API" "service" "$SERVICE_JSC_URL" "$CHILD_DID" "$SERVICE_CLAIMS"
+
+          # Discover custom schema from organization-vs DID doc
+          ORG_DID=$(curl -sf "${ORG_ADMIN_API}/v1/agent" | jq -r '.publicDid')
+          ORG_PUBLIC_URL="https://${VS_NAME}.${NETWORK}.verana.network"
+
+          ORG_DID_DOC=$(curl -sf "${ORG_PUBLIC_URL}/.well-known/did.json")
+          CUSTOM_VP_URL=$(echo "$ORG_DID_DOC" | jq -r '
+            .service[] |
+            select(.type == "LinkedVerifiablePresentation") |
+            select(.id | test("organization-jsc-vp|service-jsc-vp") | not) |
+            select(.id | test("jsc-vp")) |
+            .serviceEndpoint' | head -1)
+
+          CUSTOM_VP=$(curl -sf "$CUSTOM_VP_URL")
+          CUSTOM_SCHEMA_REF=$(echo "$CUSTOM_VP" | jq -r '.verifiableCredential[0].credentialSubject.jsonSchema."$ref" // empty')
+          CUSTOM_SCHEMA_ID=$(echo "$CUSTOM_SCHEMA_REF" | grep -oE '[0-9]+$')
+          ok "Organization-vs custom schema ID: $CUSTOM_SCHEMA_ID"
+
+          # Obtain ISSUER permission via VP flow
+          if EXISTING_PERM=$(find_active_issuer_perm "$CUSTOM_SCHEMA_ID" "$CHILD_DID"); then
+            ok "Active ISSUER permission already exists: $EXISTING_PERM — skipping"
+          else
+            ROOT_PERM_ID=$(discover_active_root_perm "$CUSTOM_SCHEMA_ID")
+            check_balance "$USER_ACC"
+
+            START_RESULT=$(veranad tx perm start-perm-vp \
+              issuer "$ROOT_PERM_ID" \
+              --did "$CHILD_DID" \
+              --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+              --fees "$FEES" --gas auto --node "$NODE_RPC" \
+              --output json -y 2>&1 | extract_tx_json)
+            START_TX_HASH=$(echo "$START_RESULT" | jq -r '.txhash // empty')
+            if [ -z "$START_TX_HASH" ]; then
+              echo "::error::Failed to start ISSUER VP"
+              exit 1
+            fi
+            sleep 8
+            ISSUER_PERM=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id")
+            if [ -z "$ISSUER_PERM" ]; then
+              sleep 6
+              ISSUER_PERM=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id")
+            fi
+
+            check_balance "$USER_ACC"
+            veranad tx perm set-perm-vp-validated \
+              "$ISSUER_PERM" \
+              --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+              --fees "$FEES" --gas auto --node "$NODE_RPC" \
+              --output json -y
+            sleep 6
+            ok "ISSUER permission validated: $ISSUER_PERM"
+          fi
+
+      # -----------------------------------------------------------------------
+      # DEPLOY-CHATBOT: Build and deploy Issuer Chatbot service
+      # -----------------------------------------------------------------------
+      - name: Set up Docker Buildx
+        if: inputs.step == 'deploy-chatbot' || inputs.step == 'all'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to container registry
+        if: inputs.step == 'deploy-chatbot' || inputs.step == 'all'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Issuer Chatbot image
+        if: inputs.step == 'deploy-chatbot' || inputs.step == 'all'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./issuer-chatbot-vs/issuer-chatbot
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/issuer-chatbot:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/issuer-chatbot:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy Issuer Chatbot
+        if: inputs.step == 'deploy-chatbot' || inputs.step == 'all'
+        run: |
+          NAMESPACE="${CHART_NAMESPACE}"
+          APP_NAME="issuer-chatbot-app-${VS_NAME}"
+          IMAGE="ghcr.io/${{ github.repository }}/issuer-chatbot:${{ github.sha }}"
+          PORT="${CHATBOT_PORT:-4000}"
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${APP_NAME}
+            namespace: ${NAMESPACE}
+            labels:
+              app: ${APP_NAME}
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: ${APP_NAME}
+            template:
+              metadata:
+                labels:
+                  app: ${APP_NAME}
+              spec:
+                containers:
+                  - name: issuer-chatbot
+                    image: ${IMAGE}
+                    ports:
+                      - containerPort: ${PORT}
+                    env:
+                      - name: VS_AGENT_ADMIN_URL
+                        value: "http://${RELEASE_NAME}:3000"
+                      - name: CHATBOT_PORT
+                        value: "${PORT}"
+                      - name: DATABASE_URL
+                        value: "${DATABASE_URL:-sqlite:./data/sessions.db}"
+                      - name: SERVICE_NAME
+                        value: "${SERVICE_NAME}"
+                      - name: CUSTOM_SCHEMA_BASE_ID
+                        value: "${CUSTOM_SCHEMA_BASE_ID:-example}"
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${APP_NAME}
+            namespace: ${NAMESPACE}
+          spec:
+            selector:
+              app: ${APP_NAME}
+            ports:
+              - port: ${PORT}
+                targetPort: ${PORT}
+          EOF
+
+          kubectl rollout status deployment/"${APP_NAME}" -n "$NAMESPACE" --timeout=300s
+
+      - name: Configure VS-Agent EVENTS_BASE_URL
+        if: inputs.step == 'deploy-chatbot' || inputs.step == 'all'
+        run: |
+          APP_NAME="issuer-chatbot-app-${VS_NAME}"
+          CHATBOT_URL="http://${APP_NAME}:${CHATBOT_PORT:-4000}"
+          kubectl set env deployment/"${RELEASE_NAME}" \
+            -n "$CHART_NAMESPACE" \
+            EVENTS_BASE_URL="$CHATBOT_URL"
+
+      # -----------------------------------------------------------------------
+      # CLEANUP
+      # -----------------------------------------------------------------------
+      - name: Stop port-forwards
+        if: always()
+        run: |
+          [ -n "${CHILD_PF_PID:-}" ] && kill "$CHILD_PF_PID" 2>/dev/null || true
+          [ -n "${ORG_PF_PID:-}" ] && kill "$ORG_PF_PID" 2>/dev/null || true
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Issuer Chatbot VS" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${INGRESS_HOST:-}" ]; then
+            echo "- **VS Agent:** https://${INGRESS_HOST}/.well-known/did.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "- **Network:** ${NETWORK:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Service:** ${VS_NAME:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ inputs.step }}" = "deploy-chatbot" ] || [ "${{ inputs.step }}" = "all" ]; then
+            echo "- **Chatbot Image:** ghcr.io/${{ github.repository }}/issuer-chatbot:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          fi

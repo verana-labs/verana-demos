@@ -1,9 +1,7 @@
-scripts/vs-demo/vs-agent-demo-data/data/wallet/test-vs-agent/sqlite.db
-scripts/vs-demo/vs-agent-demo-data/data/wallet/test-vs-agent/sqlite.db-shm
-.gitignore
-
 # Node.js
 node_modules/
 dist/
 data/
-scripts/vs-demo/vs-demo-ids.env
+
+# Generated IDs
+*/ids.env
