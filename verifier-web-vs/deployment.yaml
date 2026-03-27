@@ -1,14 +1,14 @@
 # Verifier Web VS Agent deployment — Helm chart values
 #
 # Network and service name are derived from the branch name.
-# The workflow substitutes __NETWORK__ and __VS_NAME__ placeholders at deploy time.
+# The workflow substitutes __NETWORK__, __VS_NAME__ and __CHILD_VS_NAME__ placeholders at deploy time.
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
 chartVersion: v1.9.1
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
 
-name: __VS_NAME__
+name: __CHILD_VS_NAME__
 replicas: 1
 
 adminPort: 3000
