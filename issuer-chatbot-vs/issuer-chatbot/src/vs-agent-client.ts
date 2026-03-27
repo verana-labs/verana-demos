@@ -28,8 +28,8 @@ export interface VtjscListResponse {
 export interface CreateCredentialTypeRequest {
   name: string;
   version: string;
-  attributes: string[];
-  relatedJsonSchemaCredentialId: string;
+  attributes?: string[];
+  relatedJsonSchemaCredentialId?: string;
   supportRevocation: boolean;
 }
 
