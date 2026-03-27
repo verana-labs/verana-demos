@@ -1,5 +1,6 @@
 export interface Config {
   vsAgentAdminUrl: string;
+  orgVsAdminUrl: string;
   chatbotPort: number;
   databaseUrl: string;
   serviceName: string;
@@ -10,6 +11,7 @@ export interface Config {
 export function loadConfig(): Config {
   return {
     vsAgentAdminUrl: process.env.VS_AGENT_ADMIN_URL || "http://localhost:3000",
+    orgVsAdminUrl: process.env.ORG_VS_ADMIN_URL || process.env.VS_AGENT_ADMIN_URL || "http://localhost:3000",
     chatbotPort: parseInt(process.env.CHATBOT_PORT || "4000", 10),
     databaseUrl: process.env.DATABASE_URL || "sqlite:./data/sessions.db",
     serviceName: process.env.SERVICE_NAME || "Example Verana Service",

@@ -260,6 +260,8 @@ jobs:
                     env:
                       - name: VS_AGENT_ADMIN_URL
                         value: "http://${RELEASE_NAME}:3000"
+                      - name: ORG_VS_ADMIN_URL
+                        value: "http://${VS_NAME}:3000"
                       - name: CHATBOT_PORT
                         value: "${PORT}"
                       - name: DATABASE_URL

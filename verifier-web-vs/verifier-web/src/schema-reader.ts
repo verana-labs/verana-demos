@@ -42,9 +42,12 @@ export interface SchemaInfo {
 
 export async function discoverSchema(
   client: VsAgentClient,
-  customSchemaBaseId: string
+  customSchemaBaseId: string,
+  orgClient?: VsAgentClient
 ): Promise<SchemaInfo> {
-  const vtjscList = await client.getJsonSchemaCredentials();
+  // Use the org-vs agent to find the custom schema VTJSC (org owns the schema)
+  const schemaSource = orgClient || client;
+  const vtjscList = await schemaSource.getJsonSchemaCredentials();
 
   // Find the custom VTJSC — credential ID ends with schemas-{baseId}-jsc.json
   // (not the ECS org/service VTJSCs which end in -service-jsc.json / -org-jsc.json)

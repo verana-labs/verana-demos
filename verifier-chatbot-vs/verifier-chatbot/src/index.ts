@@ -19,9 +19,11 @@ async function main(): Promise<void> {
   const agent = await client.waitForReady();
   console.log(`VS-Agent ready — DID: ${agent.publicDid}`);
 
-  // Discover schema attributes (used for proof requests)
+  // Discover schema from organization-vs (schema owner)
+  const orgConfig = { ...config, vsAgentAdminUrl: config.orgVsAdminUrl };
+  const orgClient = new VsAgentClient(orgConfig);
   const customSchemaBaseId = process.env.CUSTOM_SCHEMA_BASE_ID || "example";
-  const schema = await discoverSchema(client, customSchemaBaseId);
+  const schema = await discoverSchema(client, customSchemaBaseId, orgClient);
 
   // Initialize session store
   const store = new SessionStore(config.databaseUrl);
