@@ -122,7 +122,7 @@ export function createRoutes(
           await client.issueCredential({
             format: format as "jsonld" | "anoncreds",
             did: connectionId,
-            jsonSchemaCredentialId: schema.vtjscId,
+            credentialDefinitionId: schema.credentialDefinitionId,
             claims: session.claims,
           });
 
