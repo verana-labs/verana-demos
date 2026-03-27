@@ -178,6 +178,10 @@ jobs:
             select(.id | test("jsc-vp")) |
             .serviceEndpoint' | head -1)
 
+          if [ -z "$CUSTOM_VP_URL" ]; then
+            echo "::error::No custom schema VP found in organization-vs DID doc. Has the trust registry been created?"
+            exit 1
+          fi
           CUSTOM_VP=$(curl -sf "$CUSTOM_VP_URL")
           CUSTOM_SCHEMA_REF=$(echo "$CUSTOM_VP" | jq -r '.verifiableCredential[0].credentialSubject.jsonSchema."$ref" // empty')
           CUSTOM_SCHEMA_ID=$(echo "$CUSTOM_SCHEMA_REF" | grep -oE '[0-9]+$')

@@ -599,6 +599,27 @@ issue_remote_and_link() {
   ok "Credential linked as VP on local agent (schemaBaseId: $schema_base_id)"
 }
 
+# Check if a LinkedVerifiablePresentation already exists in the agent's public DID document
+# Usage: has_linked_vp <public_url> <schema_base_id>
+# Returns 0 (true) if a matching VP exists, 1 (false) otherwise
+has_linked_vp() {
+  local public_url=$1
+  local schema_base_id=$2
+
+  local did_doc
+  did_doc=$(curl -sf "${public_url}/.well-known/did.json" 2>/dev/null) || return 1
+
+  local match
+  match=$(echo "$did_doc" | jq -r \
+    --arg sbi "$schema_base_id" \
+    '.service[] |
+     select(.type == "LinkedVerifiablePresentation") |
+     select(.id | test($sbi + "-jsc-vp")) |
+     .id' 2>/dev/null | head -1)
+
+  [ -n "$match" ]
+}
+
 # ---------------------------------------------------------------------------
 # CLI setup helpers
 # ---------------------------------------------------------------------------
