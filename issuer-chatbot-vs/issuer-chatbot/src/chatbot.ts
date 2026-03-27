@@ -203,14 +203,10 @@ export class Chatbot {
       );
 
       // Convert flat claims to array format for the VS-Agent API
-      // Include the required "id" field as a random URN UUID
-      const claimsArray: { name: string; value: string }[] = [
-        { name: "id", value: `urn:uuid:${crypto.randomUUID()}` },
-        ...Object.entries(claims).map(([name, value]) => ({
-          name,
-          value,
-        })),
-      ];
+      const claimsArray = Object.entries(claims).map(([name, value]) => ({
+        name,
+        value,
+      }));
 
       await this.client.issueCredentialOverConnection(
         connectionId,

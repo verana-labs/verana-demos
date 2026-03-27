@@ -8,10 +8,6 @@
     "credentialSubject": {
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "format": "uri"
-        },
         "firstName": {
           "type": "string",
           "description": "The first name of the subject"
@@ -26,7 +22,6 @@
         }
       },
       "required": [
-        "id",
         "firstName",
         "lastName",
         "countryOfResidence"
