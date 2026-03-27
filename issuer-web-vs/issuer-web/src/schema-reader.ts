@@ -1,4 +1,4 @@
-import { VsAgentClient, VtjscEntry } from "./vs-agent-client";
+import { VsAgentClient } from "./vs-agent-client";
 
 const VPR_NETWORK_MAP: Record<string, string> = {
   "vna-testnet-1": "https://api.testnet.verana.network/verana",
@@ -38,43 +38,111 @@ export interface SchemaInfo {
   schemaId: string;
   title: string;
   attributes: SchemaAttribute[];
+  credentialDefinitionId: string;
 }
 
+// Discover the custom schema VTJSC from the organization-vs public DID document.
+// Falls back to the admin API when no public URL is configured (fully local setup).
 export async function discoverSchema(
   client: VsAgentClient,
   customSchemaBaseId: string,
+  orgPublicUrl?: string,
   orgClient?: VsAgentClient
 ): Promise<SchemaInfo> {
-  // Use the org-vs agent to find the custom schema VTJSC (org owns the schema)
-  const schemaSource = orgClient || client;
-  const vtjscList = await schemaSource.getJsonSchemaCredentials();
+  let vtjscId: string;
+  let schemaUrl: string;
 
-  // Find the custom VTJSC — credential ID ends with schemas-{baseId}-jsc.json
-  // (not the ECS org/service VTJSCs which end in -service-jsc.json / -org-jsc.json)
-  const suffix = `schemas-${customSchemaBaseId}-jsc.json`;
-  const customVtjsc = vtjscList.data.find(
-    (v: VtjscEntry) => v.credential.id.endsWith(suffix)
-  );
+  if (orgPublicUrl) {
+    // Discover from public DID document (works through the public ingress)
+    const didDocUrl = `${orgPublicUrl}/.well-known/did.json`;
+    console.log(`Fetching organization-vs DID document from ${didDocUrl}`);
+    const didDocRes = await fetch(didDocUrl);
+    if (!didDocRes.ok) {
+      throw new Error(
+        `Failed to fetch DID document from ${didDocUrl}: ${didDocRes.status}`
+      );
+    }
+    const didDoc = (await didDocRes.json()) as {
+      service?: { id: string; type: string; serviceEndpoint: string }[];
+    };
 
-  if (!customVtjsc) {
-    const availableIds = vtjscList.data.map((v: VtjscEntry) => v.credential.id);
-    throw new Error(
-      `Custom VTJSC not found for base ID "${customSchemaBaseId}". ` +
-        `Available VTJSCs: ${JSON.stringify(availableIds)}`
+    // Find the LinkedVerifiablePresentation for the custom schema
+    const vpSuffix = `schemas-${customSchemaBaseId}-jsc-vp`;
+    const vpService = didDoc.service?.find(
+      (s) =>
+        s.type === "LinkedVerifiablePresentation" && s.id.includes(vpSuffix)
     );
+    if (!vpService) {
+      const availableIds = (didDoc.service || [])
+        .filter((s) => s.type === "LinkedVerifiablePresentation")
+        .map((s) => s.id);
+      throw new Error(
+        `Custom schema VP not found for "${customSchemaBaseId}" in DID document. ` +
+          `Available VPs: ${JSON.stringify(availableIds)}`
+      );
+    }
+
+    // Fetch the VP and extract the VTJSC credential
+    console.log(`Fetching custom schema VP from ${vpService.serviceEndpoint}`);
+    const vpRes = await fetch(vpService.serviceEndpoint);
+    if (!vpRes.ok) {
+      throw new Error(
+        `Failed to fetch VP from ${vpService.serviceEndpoint}: ${vpRes.status}`
+      );
+    }
+    const vp = (await vpRes.json()) as {
+      verifiableCredential?: {
+        id?: string;
+        credentialSubject?: {
+          jsonSchema?: { $ref: string } | string;
+        };
+      }[];
+    };
+    const vtjsc = vp.verifiableCredential?.[0];
+    if (!vtjsc?.id) {
+      throw new Error(`VP at ${vpService.serviceEndpoint} has no VTJSC`);
+    }
+
+    vtjscId = vtjsc.id;
+    const rawRef = vtjsc.credentialSubject?.jsonSchema;
+    const ref =
+      typeof rawRef === "object" && rawRef !== null
+        ? (rawRef as { $ref: string }).$ref
+        : (rawRef as string | undefined);
+    if (!ref) {
+      throw new Error(`VTJSC ${vtjscId} has no credentialSubject.jsonSchema`);
+    }
+    schemaUrl = ref;
+  } else {
+    // Fallback: use org admin API (fully local setup)
+    const schemaSource = orgClient || client;
+    const vtjscList = await schemaSource.getJsonSchemaCredentials();
+
+    const suffix = `schemas-${customSchemaBaseId}-jsc.json`;
+    const customVtjsc = vtjscList.data.find((v) =>
+      v.credential.id.endsWith(suffix)
+    );
+    if (!customVtjsc) {
+      const availableIds = vtjscList.data.map((v) => v.credential.id);
+      throw new Error(
+        `Custom VTJSC not found for base ID "${customSchemaBaseId}". ` +
+          `Available VTJSCs: ${JSON.stringify(availableIds)}`
+      );
+    }
+
+    vtjscId = customVtjsc.credential.id;
+    const rawRef = customVtjsc.credential.credentialSubject?.jsonSchema;
+    const ref =
+      typeof rawRef === "object" && rawRef !== null
+        ? (rawRef as { $ref: string }).$ref
+        : (rawRef as string | undefined);
+    if (!ref) {
+      throw new Error(`VTJSC ${vtjscId} has no credentialSubject.jsonSchema`);
+    }
+    schemaUrl = ref;
   }
 
-  const rawJsonSchema = customVtjsc.credential.credentialSubject?.jsonSchema;
-  const schemaUrl =
-    typeof rawJsonSchema === "object" && rawJsonSchema !== null
-      ? (rawJsonSchema as { $ref: string }).$ref
-      : (rawJsonSchema as string | undefined);
-  if (!schemaUrl) {
-    throw new Error(
-      `VTJSC ${customVtjsc.credential.id} has no credentialSubject.jsonSchema`
-    );
-  }
-
+  // Resolve and fetch the JSON schema
   const resolvedUrl = resolveSchemaRef(schemaUrl);
   console.log(`Fetching schema from ${resolvedUrl} (ref: ${schemaUrl})`);
   const schemaResponse = await fetch(resolvedUrl);
@@ -128,10 +196,44 @@ export async function discoverSchema(
       attributes.map((a) => a.name).join(", ")
   );
 
+  // Ensure a local AnonCreds credential type exists on the issuer agent
+  const credentialDefinitionId = await ensureCredentialType(client, vtjscId);
+
   return {
-    vtjscId: customVtjsc.credential.id,
-    schemaId: customVtjsc.schemaId,
+    vtjscId,
+    schemaId: vtjscId.replace(/-jsc\.json$/, ""),
     title,
     attributes,
+    credentialDefinitionId,
   };
+}
+
+async function ensureCredentialType(
+  client: VsAgentClient,
+  vtjscId: string
+): Promise<string> {
+  // Check if a credential type already exists for this VTJSC
+  const existingTypes = await client.getCredentialTypes();
+  const existing = existingTypes.find(
+    (ct) => ct.relatedJsonSchemaCredentialId === vtjscId
+  );
+  if (existing) {
+    console.log(
+      `Using existing credential type: ${existing.id}`
+    );
+    return existing.id;
+  }
+
+  // Create a new credential type
+  console.log(`Creating anoncreds credential type for VTJSC ${vtjscId}...`);
+  const created = await client.createCredentialType({
+    name: vtjscId.replace(/[^a-zA-Z0-9-]/g, "-"),
+    version: "1.0",
+    relatedJsonSchemaCredentialId: vtjscId,
+    supportRevocation: false,
+  });
+  console.log(
+    `Created credential type: ${created.id}`
+  );
+  return created.id;
 }

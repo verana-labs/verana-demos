@@ -20,9 +20,16 @@ async function main(): Promise<void> {
   console.log(`VS-Agent ready — DID: ${agent.publicDid}`);
 
   // Discover schema from organization-vs (schema owner)
-  const orgConfig = { ...config, vsAgentAdminUrl: config.orgVsAdminUrl };
-  const orgClient = new VsAgentClient(orgConfig);
-  const schema = await discoverSchema(client, config.customSchemaBaseId, orgClient);
+  const orgPublicUrl = config.orgVsPublicUrl || undefined;
+  const orgClient = orgPublicUrl
+    ? undefined
+    : new VsAgentClient({ ...config, vsAgentAdminUrl: config.orgVsAdminUrl });
+  const schema = await discoverSchema(
+    client,
+    config.customSchemaBaseId,
+    orgPublicUrl,
+    orgClient
+  );
 
   // Initialize in-memory session store
   const store = new SessionStore();

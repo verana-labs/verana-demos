@@ -163,29 +163,36 @@ setup_veranad_account "$USER_ACC" "$FAUCET_URL"
 
 log "Step 3: Obtain Service credential from organization-vs"
 
-if ! curl -sf "${ORG_VS_ADMIN_URL}/v1/agent" > /dev/null 2>&1; then
+# Verify organization-vs admin API is reachable (use /api which is always exposed)
+if ! curl -sf "${ORG_VS_ADMIN_URL}/api" > /dev/null 2>&1; then
   err "Organization VS admin API not reachable at ${ORG_VS_ADMIN_URL}"
+  err "Make sure organization-vs is running and ORG_VS_ADMIN_URL is set correctly."
   exit 1
 fi
 ok "Organization VS admin API reachable: $ORG_VS_ADMIN_URL"
 
-SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
-SERVICE_JSC_URL=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '1p')
+# Skip if Service credential is already linked on the local agent
+if has_linked_vp "$NGROK_URL" "service"; then
+  ok "Service credential already linked — skipping"
+else
+  SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
+  SERVICE_JSC_URL=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '1p')
 
-SERVICE_LOGO_DATA_URI=$(download_logo_data_uri "$SERVICE_LOGO_URL")
+  SERVICE_LOGO_DATA_URI=$(download_logo_data_uri "$SERVICE_LOGO_URL")
 
-SERVICE_CLAIMS=$(jq -n \
-  --arg id "$AGENT_DID" \
-  --arg name "$SERVICE_NAME" \
-  --arg type "$SERVICE_TYPE" \
-  --arg desc "$SERVICE_DESCRIPTION" \
-  --arg logo "$SERVICE_LOGO_DATA_URI" \
-  --argjson age "$SERVICE_MIN_AGE" \
-  --arg terms "$SERVICE_TERMS" \
-  --arg privacy "$SERVICE_PRIVACY" \
-  '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
+  SERVICE_CLAIMS=$(jq -n \
+    --arg id "$AGENT_DID" \
+    --arg name "$SERVICE_NAME" \
+    --arg type "$SERVICE_TYPE" \
+    --arg desc "$SERVICE_DESCRIPTION" \
+    --arg logo "$SERVICE_LOGO_DATA_URI" \
+    --argjson age "$SERVICE_MIN_AGE" \
+    --arg terms "$SERVICE_TERMS" \
+    --arg privacy "$SERVICE_PRIVACY" \
+    '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
 
-issue_remote_and_link "$ORG_VS_ADMIN_URL" "$ADMIN_API" "service" "$SERVICE_JSC_URL" "$AGENT_DID" "$SERVICE_CLAIMS"
+  issue_remote_and_link "$ORG_VS_ADMIN_URL" "$ADMIN_API" "service" "$SERVICE_JSC_URL" "$AGENT_DID" "$SERVICE_CLAIMS"
+fi
 
 # =============================================================================
 # STEP 4: Obtain ISSUER permission for organization-vs schema

@@ -31,10 +31,26 @@ export interface OobInvitationResponse {
   [key: string]: unknown;
 }
 
+export interface CreateCredentialTypeRequest {
+  name: string;
+  version: string;
+  attributes?: string[];
+  relatedJsonSchemaCredentialId?: string;
+  supportRevocation: boolean;
+}
+
+export interface CredentialType {
+  id: string;
+  name: string;
+  version: string;
+  relatedJsonSchemaCredentialId?: string;
+  [key: string]: unknown;
+}
+
 export interface IssueCredentialRequest {
   format: "jsonld" | "anoncreds";
   did: string;
-  jsonSchemaCredentialId: string;
+  credentialDefinitionId: string;
   claims: Record<string, string>;
 }
 
@@ -90,6 +106,20 @@ export class VsAgentClient {
       "POST",
       "/v1/oob/invitation",
       {}
+    );
+  }
+
+  async getCredentialTypes(): Promise<CredentialType[]> {
+    return this.request<CredentialType[]>("GET", "/v1/credential-types");
+  }
+
+  async createCredentialType(
+    params: CreateCredentialTypeRequest
+  ): Promise<CredentialType> {
+    return this.request<CredentialType>(
+      "POST",
+      "/v1/credential-types",
+      params
     );
   }
 

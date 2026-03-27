@@ -673,13 +673,15 @@ setup_veranad_account() {
 # Permission helpers
 # ---------------------------------------------------------------------------
 
-# Check if a DID already has an active ISSUER permission for a given schema.
-# Returns 0 (true) if an active ISSUER permission exists; 1 (false) otherwise.
+# Check if a DID already has an active permission of a given type for a schema.
+# Returns 0 (true) if an active permission exists; 1 (false) otherwise.
 # On success, prints the permission ID to stdout.
-# Usage: find_active_issuer_perm <schema_id> <did>
-find_active_issuer_perm() {
+# Usage: find_active_perm <schema_id> <perm_type> <did>
+#   perm_type: ISSUER | VERIFIER
+find_active_perm() {
   local schema_id=$1
-  local did=$2
+  local perm_type=$2
+  local did=$3
   local url="${INDEXER_URL}/verana/perm/v1/list?schema_id=${schema_id}"
 
   local perms http_code
@@ -690,9 +692,9 @@ find_active_issuer_perm() {
   perms=$(cat /tmp/perm_check.json)
 
   local perm_id
-  perm_id=$(echo "$perms" | jq -r --arg did "$did" '
+  perm_id=$(echo "$perms" | jq -r --arg did "$did" --arg pt "$perm_type" '
     .permissions[]? |
-    select(.type == "ISSUER" and .perm_state == "ACTIVE" and .did == $did) |
+    select(.type == $pt and .perm_state == "ACTIVE" and .did == $did) |
     .id' | head -1)
 
   if [ -n "$perm_id" ]; then
@@ -700,6 +702,18 @@ find_active_issuer_perm() {
     return 0
   fi
   return 1
+}
+
+# Convenience wrapper — backward-compatible.
+# Usage: find_active_issuer_perm <schema_id> <did>
+find_active_issuer_perm() {
+  find_active_perm "$1" "ISSUER" "$2"
+}
+
+# Convenience wrapper for verifier permission checks.
+# Usage: find_active_verifier_perm <schema_id> <did>
+find_active_verifier_perm() {
+  find_active_perm "$1" "VERIFIER" "$2"
 }
 
 # ---------------------------------------------------------------------------
