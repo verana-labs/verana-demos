@@ -222,9 +222,9 @@ async function ensureCredentialType(
   );
   if (existing) {
     console.log(
-      `Using existing credential type: ${existing.credentialDefinitionId}`
+      `Using existing credential type: ${existing.id}`
     );
-    return existing.credentialDefinitionId;
+    return existing.id;
   }
 
   // Create a new credential type
@@ -236,7 +236,7 @@ async function ensureCredentialType(
     supportRevocation: false,
   });
   console.log(
-    `Created credential type: ${created.credentialDefinitionId}`
+    `Created credential type: ${created.id}`
   );
-  return created.credentialDefinitionId;
+  return created.id;
 }

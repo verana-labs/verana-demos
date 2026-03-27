@@ -210,7 +210,7 @@ export class Chatbot {
 
       await this.client.issueCredentialOverConnection(
         connectionId,
-        this.schema.vtjscId,
+        this.schema.credentialDefinitionId,
         claimsArray
       );
 

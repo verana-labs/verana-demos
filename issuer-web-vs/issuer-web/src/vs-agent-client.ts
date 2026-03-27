@@ -40,9 +40,10 @@ export interface CreateCredentialTypeRequest {
 }
 
 export interface CredentialType {
-  credentialDefinitionId: string;
+  id: string;
   name: string;
   version: string;
+  relatedJsonSchemaCredentialId?: string;
   [key: string]: unknown;
 }
 
