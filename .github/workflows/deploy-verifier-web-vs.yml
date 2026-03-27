@@ -280,6 +280,32 @@ jobs:
             ports:
               - port: ${PORT}
                 targetPort: ${PORT}
+          ---
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: ${APP_NAME}
+            namespace: ${NAMESPACE}
+            annotations:
+              cert-manager.io/cluster-issuer: letsencrypt-prod
+              nginx.ingress.kubernetes.io/enable-cors: "true"
+          spec:
+            ingressClassName: nginx
+            tls:
+              - hosts:
+                  - app.verifier-web-vs.${VS_NAME}.demos.${NETWORK}.verana.network
+                secretName: ${APP_NAME}-tls
+            rules:
+              - host: app.verifier-web-vs.${VS_NAME}.demos.${NETWORK}.verana.network
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: ${APP_NAME}
+                          port:
+                            number: ${PORT}
           EOF
 
           kubectl rollout status deployment/"${APP_NAME}" -n "$NAMESPACE" --timeout=300s
@@ -304,5 +330,6 @@ jobs:
           echo "- **Network:** ${NETWORK:-unknown}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Service:** ${VS_NAME:-unknown}" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ inputs.step }}" = "deploy-web" ] || [ "${{ inputs.step }}" = "all" ]; then
+            echo "- **Web App:** https://app.verifier-web-vs.${VS_NAME}.demos.${NETWORK}.verana.network" >> "$GITHUB_STEP_SUMMARY"
             echo "- **Web Image:** veranalabs/verifier-web:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
           fi
