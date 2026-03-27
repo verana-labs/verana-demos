@@ -25,10 +25,16 @@ export interface VtjscListResponse {
   data: VtjscEntry[];
 }
 
-export interface OobInvitationResponse {
-  invitationUrl: string;
-  invitationId: string;
-  [key: string]: unknown;
+export interface CredentialOfferClaim {
+  name: string;
+  value: string;
+  mimeType?: string;
+}
+
+export interface CredentialOfferResponse {
+  credentialExchangeId: string;
+  url: string;
+  shortUrl: string;
 }
 
 export interface CreateCredentialTypeRequest {
@@ -47,17 +53,6 @@ export interface CredentialType {
   [key: string]: unknown;
 }
 
-export interface IssueCredentialRequest {
-  format: "jsonld" | "anoncreds";
-  did: string;
-  credentialDefinitionId: string;
-  claims: Record<string, string>;
-}
-
-export interface IssueCredentialResponse {
-  credential: unknown;
-  [key: string]: unknown;
-}
 
 export class VsAgentClient {
   private baseUrl: string;
@@ -101,11 +96,14 @@ export class VsAgentClient {
     );
   }
 
-  async createOobInvitation(): Promise<OobInvitationResponse> {
-    return this.request<OobInvitationResponse>(
+  async createCredentialOfferInvitation(
+    credentialDefinitionId: string,
+    claims: CredentialOfferClaim[]
+  ): Promise<CredentialOfferResponse> {
+    return this.request<CredentialOfferResponse>(
       "POST",
-      "/v1/oob/invitation",
-      {}
+      "/v1/invitation/credential-offer",
+      { credentialDefinitionId, claims }
     );
   }
 
@@ -119,16 +117,6 @@ export class VsAgentClient {
     return this.request<CredentialType>(
       "POST",
       "/v1/credential-types",
-      params
-    );
-  }
-
-  async issueCredential(
-    params: IssueCredentialRequest
-  ): Promise<IssueCredentialResponse> {
-    return this.request<IssueCredentialResponse>(
-      "POST",
-      "/v1/vt/issue-credential",
       params
     );
   }

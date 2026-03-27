@@ -44,7 +44,7 @@ async function main(): Promise<void> {
     console.log(`  Open http://localhost:${config.issuerPort} in your browser`);
     console.log(`Webhook endpoint:`);
     console.log(
-      `  POST http://localhost:${config.issuerPort}/webhooks/connection-state-updated`
+      `  POST http://localhost:${config.issuerPort}/webhooks/message-received`
     );
   });
 

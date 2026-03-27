@@ -5,10 +5,16 @@ import { SchemaInfo } from "./schema-reader";
 import { SessionStore } from "./session-store";
 import { Config } from "./config";
 
-interface ConnectionStateEvent {
-  invitationId?: string;
-  connectionId?: string;
-  state: string;
+interface MessageReceivedEvent {
+  timestamp?: string;
+  message: {
+    id?: string;
+    type?: string;
+    connectionId?: string;
+    state?: string;
+    threadId?: string;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 }
 
@@ -41,19 +47,34 @@ export function createRoutes(
         return;
       }
 
-      // Create OOB connection invitation
-      const oobResponse = await client.createOobInvitation();
-      const session = store.createSession(oobResponse.invitationId, claims);
+      // Create credential-offer invitation (one-time, credential embedded)
+      const claimsArray = schema.attributes
+        .filter((a) => claims[a.name] !== undefined)
+        .map((a) => ({ name: a.name, value: claims[a.name] }));
 
-      // Generate QR code as data URL
-      const qrDataUrl = await QRCode.toDataURL(oobResponse.invitationUrl, {
+      const offerResponse = await client.createCredentialOfferInvitation(
+        schema.credentialDefinitionId,
+        claimsArray
+      );
+      console.log(
+        `Credential offer created: exchangeId=${offerResponse.credentialExchangeId}`
+      );
+
+      const session = store.createSession(
+        offerResponse.credentialExchangeId,
+        claims
+      );
+
+      // Use shortUrl for QR (full URL is too large for QR codes)
+      const qrUrl = offerResponse.shortUrl || offerResponse.url;
+      const qrDataUrl = await QRCode.toDataURL(qrUrl, {
         width: 300,
         margin: 2,
       });
 
       res.json({
         sessionId: session.sessionId,
-        invitationUrl: oobResponse.invitationUrl,
+        invitationUrl: qrUrl,
         qrDataUrl,
       });
     } catch (error) {
@@ -79,70 +100,57 @@ export function createRoutes(
     }
   });
 
-  // Webhook: connection state updated → auto-issue credential
+  // Webhook: message-received → track credential issuance completion
   router.post(
-    "/webhooks/connection-state-updated",
+    "/webhooks/message-received",
     async (req: Request, res: Response) => {
       try {
-        const event = req.body as ConnectionStateEvent;
+        const event = req.body as MessageReceivedEvent;
+        const msg = event.message;
+        const msgType = (msg.type || "").toLowerCase();
+
         console.log(
-          `Webhook: connection-state-updated — ${event.connectionId} → ${event.state}`
+          `Webhook: message-received — type=${msgType} id=${msg.id} state=${msg.state || "n/a"}`
         );
 
-        if (
-          event.state !== "COMPLETED" &&
-          event.state !== "completed" &&
-          event.state !== "active"
-        ) {
+        // Only handle credential-reception events
+        if (msgType !== "credential-reception") {
           res.status(200).json({ ok: true });
           return;
         }
 
-        const invitationId = event.invitationId || "";
-        const connectionId = event.connectionId || "";
-        const session = store.getSessionByInvitationId(invitationId);
+        const credExId = msg.id || "";
+        const state = (msg.state || "").toLowerCase();
+        const session = store.getSessionByCredentialExchangeId(credExId);
 
         if (!session) {
           console.log(
-            `No pending issuance session for invitationId: ${invitationId}`
+            `No pending session for credentialExchangeId: ${credExId}`
           );
           res.status(200).json({ ok: true });
           return;
         }
 
-        store.setConnectionId(session.sessionId, connectionId);
+        if (msg.connectionId) {
+          store.setConnectionId(session.sessionId, msg.connectionId);
+        }
 
-        // Issue the credential
-        const format = config.enableAnoncreds ? "anoncreds" : "jsonld";
-        console.log(
-          `Issuing ${format} credential to ${connectionId} (session: ${session.sessionId})`
-        );
-
-        try {
-          await client.issueCredential({
-            format: format as "jsonld" | "anoncreds",
-            did: connectionId,
-            credentialDefinitionId: schema.credentialDefinitionId,
-            claims: session.claims,
-          });
-
+        if (state === "done") {
           store.markIssued(session.sessionId);
           console.log(`Credential issued for session ${session.sessionId}`);
-        } catch (issueError) {
-          const msg =
-            issueError instanceof Error
-              ? issueError.message
-              : String(issueError);
-          console.error(
-            `Failed to issue credential for session ${session.sessionId}:`,
-            msg
+        } else if (state === "declined" || state === "abandoned") {
+          store.markError(
+            session.sessionId,
+            `Credential ${state} by holder`
           );
-          store.markError(session.sessionId, msg);
+          console.log(
+            `Credential ${state} for session ${session.sessionId}`
+          );
         }
 
         res.status(200).json({ ok: true });
       } catch (error) {
-        console.error("Error handling connection webhook:", error);
+        console.error("Error handling message webhook:", error);
         res.status(500).json({ error: "Internal server error" });
       }
     }

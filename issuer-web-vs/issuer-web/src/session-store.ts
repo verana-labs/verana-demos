@@ -2,7 +2,7 @@ import crypto from "crypto";
 
 export interface Session {
   sessionId: string;
-  invitationId: string;
+  credentialExchangeId: string;
   status: "filling" | "waiting" | "issued" | "error";
   claims: Record<string, string>;
   connectionId?: string;
@@ -12,20 +12,20 @@ export interface Session {
 
 export class SessionStore {
   private sessions = new Map<string, Session>();
-  // Map invitationId → sessionId for webhook lookups
-  private invitationIndex = new Map<string, string>();
+  // Map credentialExchangeId → sessionId for webhook lookups
+  private credExIndex = new Map<string, string>();
 
-  createSession(invitationId: string, claims: Record<string, string>): Session {
+  createSession(credentialExchangeId: string, claims: Record<string, string>): Session {
     const sessionId = crypto.randomUUID();
     const session: Session = {
       sessionId,
-      invitationId,
+      credentialExchangeId,
       status: "waiting",
       claims,
       createdAt: Date.now(),
     };
     this.sessions.set(sessionId, session);
-    this.invitationIndex.set(invitationId, sessionId);
+    this.credExIndex.set(credentialExchangeId, sessionId);
     return session;
   }
 
@@ -33,8 +33,8 @@ export class SessionStore {
     return this.sessions.get(sessionId);
   }
 
-  getSessionByInvitationId(invitationId: string): Session | undefined {
-    const sessionId = this.invitationIndex.get(invitationId);
+  getSessionByCredentialExchangeId(credentialExchangeId: string): Session | undefined {
+    const sessionId = this.credExIndex.get(credentialExchangeId);
     if (!sessionId) return undefined;
     return this.sessions.get(sessionId);
   }
@@ -65,7 +65,7 @@ export class SessionStore {
     const now = Date.now();
     for (const [id, session] of this.sessions) {
       if (now - session.createdAt > maxAgeMs) {
-        this.invitationIndex.delete(session.invitationId);
+        this.credExIndex.delete(session.credentialExchangeId);
         this.sessions.delete(id);
       }
     }

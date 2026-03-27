@@ -122,6 +122,7 @@ ok "ngrok tunnel: $NGROK_URL"
 
 log "Starting VS Agent container..."
 mkdir -p "$VS_AGENT_DATA_DIR"
+ISSUER_WEB_PORT="${ISSUER_WEB_PORT:-4001}"
 docker run --platform linux/amd64 -d \
   -p "${VS_AGENT_PUBLIC_PORT}:3001" \
   -p "${VS_AGENT_ADMIN_PORT}:3000" \
@@ -129,6 +130,7 @@ docker run --platform linux/amd64 -d \
   -e "AGENT_PUBLIC_DID=did:webvh:${NGROK_DOMAIN}" \
   -e "AGENT_LABEL=${SERVICE_NAME}" \
   -e "ENABLE_PUBLIC_API_SWAGGER=true" \
+  -e "EVENTS_BASE_URL=http://host.docker.internal:${ISSUER_WEB_PORT}/webhooks" \
   --name "$VS_AGENT_CONTAINER_NAME" \
   "$VS_AGENT_IMAGE"
 
