@@ -211,9 +211,8 @@ jobs:
         if: inputs.step == 'deploy-chatbot' || inputs.step == 'all'
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKER_HUB_LOGIN }}
+          password: ${{ secrets.DOCKER_HUB_PWD }}
 
       - name: Build and push Verifier Chatbot image
         if: inputs.step == 'deploy-chatbot' || inputs.step == 'all'
@@ -222,8 +221,8 @@ jobs:
           context: ./verifier-chatbot-vs/verifier-chatbot
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/verifier-chatbot:${{ github.sha }}
-            ghcr.io/${{ github.repository }}/verifier-chatbot:${{ env.CHILD_VS_NAME }}
+            veranalabs/verifier-chatbot:${{ github.sha }}
+            veranalabs/verifier-chatbot:${{ env.CHILD_VS_NAME }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -232,7 +231,7 @@ jobs:
         run: |
           NAMESPACE="${CHART_NAMESPACE}"
           APP_NAME="verifier-chatbot-app-${VS_NAME}"
-          IMAGE="ghcr.io/${{ github.repository }}/verifier-chatbot:${{ github.sha }}"
+          IMAGE="veranalabs/verifier-chatbot:${{ github.sha }}"
           PORT="${CHATBOT_PORT:-4002}"
 
           cat <<EOF | kubectl apply -f -
@@ -314,5 +313,5 @@ jobs:
           echo "- **Network:** ${NETWORK:-unknown}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Service:** ${VS_NAME:-unknown}" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ inputs.step }}" = "deploy-chatbot" ] || [ "${{ inputs.step }}" = "all" ]; then
-            echo "- **Chatbot Image:** ghcr.io/${{ github.repository }}/verifier-chatbot:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Chatbot Image:** veranalabs/verifier-chatbot:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
           fi
