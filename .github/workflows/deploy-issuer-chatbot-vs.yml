@@ -166,7 +166,7 @@ jobs:
 
           # Discover custom schema from organization-vs DID doc
           ORG_DID=$(curl -sf "${ORG_ADMIN_API}/v1/agent" | jq -r '.publicDid')
-          ORG_PUBLIC_URL="https://${VS_NAME}.${NETWORK}.verana.network"
+          ORG_PUBLIC_URL="https://organization-vs.${VS_NAME}.demos.${NETWORK}.testnet.verana.network"
 
           ORG_DID_DOC=$(curl -sf "${ORG_PUBLIC_URL}/.well-known/did.json")
           CUSTOM_VP_URL=$(echo "$ORG_DID_DOC" | jq -r '

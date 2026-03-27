@@ -163,7 +163,7 @@ jobs:
           issue_remote_and_link "$ORG_ADMIN_API" "$CHILD_ADMIN_API" "service" "$SERVICE_JSC_URL" "$CHILD_DID" "$SERVICE_CLAIMS"
 
           # Discover custom schema from organization-vs DID doc
-          ORG_PUBLIC_URL="https://${VS_NAME}.${NETWORK}.verana.network"
+          ORG_PUBLIC_URL="https://organization-vs.${VS_NAME}.demos.${NETWORK}.testnet.verana.network"
           ORG_DID_DOC=$(curl -sf "${ORG_PUBLIC_URL}/.well-known/did.json")
 
           CUSTOM_VP_URL=$(echo "$ORG_DID_DOC" | jq -r '

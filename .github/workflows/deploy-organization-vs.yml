@@ -72,11 +72,8 @@ jobs:
           yq 'del(.chartSource, .chartVersion)' /tmp/deployment-resolved.yaml > /tmp/helm-values.yaml
           yq -i '.didcommLabel = env(SERVICE_NAME)' /tmp/helm-values.yaml
           yq -i '.didcommInvitationImageUrl = env(SERVICE_LOGO_URL)' /tmp/helm-values.yaml
-          # Conditionally expose admin API publicly
-          if [ "${EXPOSE_ADMIN_API}" = "true" ]; then
-            yq -i '.ingress.private.host = .ingress.host' /tmp/helm-values.yaml
-            yq -i '.ingress.private.tlsSecret = .ingress.tlsSecret' /tmp/helm-values.yaml
-          fi
+          # Do NOT expose admin via Helm private ingress — a standalone
+          # path-restricted ingress is deployed separately after Helm install.
           echo "--- Helm values ---"
           cat /tmp/helm-values.yaml
 
@@ -115,6 +112,46 @@ jobs:
             --namespace "$CHART_NAMESPACE" --create-namespace \
             --values /tmp/helm-values.yaml \
             --wait --timeout 300s
+
+      - name: Deploy admin ingress (issuance endpoint only)
+        if: (inputs.step == 'deploy' || inputs.step == 'all') && env.EXPOSE_ADMIN_API == 'true'
+        run: |
+          ADMIN_HOST="admin.${INGRESS_HOST}"
+          ADMIN_SECRET="${ADMIN_HOST}-cert"
+          cat <<EOF | kubectl apply -n "$CHART_NAMESPACE" -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: admin-${RELEASE_NAME}
+            annotations:
+              cert-manager.io/cluster-issuer: letsencrypt-prod
+              nginx.ingress.kubernetes.io/enable-cors: "true"
+          spec:
+            ingressClassName: nginx
+            tls:
+              - hosts:
+                  - ${ADMIN_HOST}
+                secretName: ${ADMIN_SECRET}
+            rules:
+              - host: ${ADMIN_HOST}
+                http:
+                  paths:
+                    - path: /api
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: ${RELEASE_NAME}
+                          port:
+                            number: 3000
+                    - path: /v1/vt/issue-credential
+                      pathType: Exact
+                      backend:
+                        service:
+                          name: ${RELEASE_NAME}
+                          port:
+                            number: 3000
+          EOF
+          echo "Admin ingress deployed: https://${ADMIN_HOST}/v1/vt/issue-credential"
 
       # -----------------------------------------------------------------------
       # PORT-FORWARD: Access admin API via kubectl
