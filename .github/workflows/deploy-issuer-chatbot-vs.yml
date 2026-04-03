@@ -282,10 +282,13 @@ jobs:
               metadata:
                 labels:
                   app: ${APP_NAME}
+                annotations:
+                  deploy-timestamp: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
               spec:
                 containers:
                   - name: issuer-chatbot
                     image: ${IMAGE}
+                    imagePullPolicy: Always
                     ports:
                       - containerPort: ${PORT}
                     env:
