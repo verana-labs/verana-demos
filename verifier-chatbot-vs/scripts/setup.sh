@@ -57,6 +57,9 @@ SERVICE_MIN_AGE="${SERVICE_MIN_AGE:-0}"
 SERVICE_TERMS="${SERVICE_TERMS:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
 SERVICE_PRIVACY="${SERVICE_PRIVACY:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
 
+# Issuer VS — discover credential definition from this issuer's public API
+ISSUER_VS_PUBLIC_URL="${ISSUER_VS_PUBLIC_URL:-http://localhost:3003}"
+
 # ---------------------------------------------------------------------------
 # Ensure veranad is available
 # ---------------------------------------------------------------------------
@@ -261,14 +264,19 @@ else
   ok "VERIFIER permission should now be active"
 fi
 
-# Discover AnonCreds credential definition from organization-vs
-log "Discovering AnonCreds credential definition from organization-vs..."
-ANONCREDS_CRED_DEF=$(curl -sf "${ORG_PUBLIC_API}/resources?resourceType=anonCredsCredDef" \
-  | jq -r '.[0] // empty' 2>/dev/null || echo "")
-if [ -n "$ANONCREDS_CRED_DEF" ]; then
-  ok "AnonCreds cred def discovered from organization-vs"
+# =============================================================================
+# STEP 5: Discover AnonCreds credential definition from issuer-chatbot-vs
+# =============================================================================
+
+log "Step 5: Discovering AnonCreds credential definition from issuer-chatbot-vs..."
+ANONCREDS_CRED_DEF_ID=$(curl -sf "${ISSUER_VS_PUBLIC_URL}/resources?resourceType=anonCredsCredDef" \
+  | jq -r '.[0].id // empty' 2>/dev/null || echo "")
+if [ -n "$ANONCREDS_CRED_DEF_ID" ]; then
+  ok "AnonCreds cred def discovered from issuer-chatbot-vs: $ANONCREDS_CRED_DEF_ID"
 else
-  warn "No AnonCreds cred def found on organization-vs"
+  err "No AnonCreds cred def found on issuer-chatbot-vs (${ISSUER_VS_PUBLIC_URL})"
+  err "Make sure issuer-chatbot-vs is running and has created its credential definition"
+  exit 1
 fi
 
 # =============================================================================
@@ -290,6 +298,7 @@ VS_AGENT_PUBLIC_PORT=${VS_AGENT_PUBLIC_PORT}
 USER_ACC=${USER_ACC}
 CUSTOM_SCHEMA_ID=${CUSTOM_SCHEMA_ID:-}
 VERIFIER_PERM_ID=${VERIFIER_PERM_ID:-}
+ANONCREDS_CRED_DEF_ID=${ANONCREDS_CRED_DEF_ID:-}
 EOF
 
 ok "IDs saved to ${OUTPUT_FILE}"
@@ -305,6 +314,9 @@ echo "  Public URL        : $NGROK_URL"
 echo "  Admin API         : $ADMIN_API"
 echo "  Schema ID         : ${CUSTOM_SCHEMA_ID:-n/a}"
 echo "  Verifier Perm     : ${VERIFIER_PERM_ID:-n/a}"
+if [ -n "${ANONCREDS_CRED_DEF_ID:-}" ]; then
+echo "  AnonCreds Cred Def: $ANONCREDS_CRED_DEF_ID (from issuer-chatbot-vs)"
+fi
 echo ""
 echo "  Start the chatbot:"
 echo "    ./verifier-chatbot-vs/scripts/start.sh"

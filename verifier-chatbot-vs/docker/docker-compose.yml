@@ -39,6 +39,8 @@ services:
       - CHATBOT_PORT=${CHATBOT_PORT:-4002}
       - DATABASE_URL=${DATABASE_URL:-sqlite:./data/sessions.db}
       - SERVICE_NAME=${SERVICE_NAME:-Example Verifier Chatbot}
+      - ORG_VS_PUBLIC_URL=${ORG_VS_PUBLIC_URL:-}
+      - ISSUER_VS_PUBLIC_URL=${ISSUER_VS_PUBLIC_URL:-}
     depends_on:
       - vs-agent
 

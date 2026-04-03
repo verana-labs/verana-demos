@@ -262,6 +262,10 @@ jobs:
                         value: "http://${RELEASE_NAME}:3000"
                       - name: ORG_VS_ADMIN_URL
                         value: "http://${VS_NAME}:3000"
+                      - name: ORG_VS_PUBLIC_URL
+                        value: "https://organization-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
+                      - name: ISSUER_VS_PUBLIC_URL
+                        value: "https://issuer-web-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
                       - name: VERIFIER_PORT
                         value: "${PORT}"
                       - name: SERVICE_NAME

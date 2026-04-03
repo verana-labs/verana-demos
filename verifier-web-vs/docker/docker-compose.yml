@@ -37,6 +37,8 @@ services:
       - VS_AGENT_ADMIN_URL=http://vs-agent:3000
       - VERIFIER_PORT=${VERIFIER_PORT:-4003}
       - SERVICE_NAME=${SERVICE_NAME:-Example Web Verifier}
+      - ORG_VS_PUBLIC_URL=${ORG_VS_PUBLIC_URL:-}
+      - ISSUER_VS_PUBLIC_URL=${ISSUER_VS_PUBLIC_URL:-}
     depends_on:
       - vs-agent
 

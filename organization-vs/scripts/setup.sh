@@ -358,37 +358,13 @@ else
 fi
 
 # =============================================================================
-# STEP 5: AnonCreds credential definition (optional)
+# STEP 5: AnonCreds credential definition — SKIPPED
 # =============================================================================
+# NOTE: organization-vs no longer creates a credential definition.
+# Each issuer (issuer-chatbot-vs, issuer-web-vs) creates its own credential
+# definition pointing to the jsonSchemaCredential published by this service.
 
-ANONCREDS_CRED_DEF_ID=""
-if [ "$ENABLE_ANONCREDS" = "true" ]; then
-  log "Step 5: AnonCreds credential definition"
-
-  # Check if already exists
-  PUBLIC_URL="http://localhost:${VS_AGENT_PUBLIC_PORT}"
-  EXISTING_ANONCREDS=$(curl -sf "${PUBLIC_URL}/resources?resourceType=anonCredsCredDef" \
-    | jq -r '. | length' 2>/dev/null || echo "0")
-  if [ "${EXISTING_ANONCREDS:-0}" -gt 0 ]; then
-    ok "AnonCreds credential definition already exists — skipping"
-  else
-    VTJSC_VPR_REF="vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}"
-    VTJSC_CRED_ID=$(curl -sf "${ADMIN_API}/v1/vt/json-schema-credentials" \
-      | jq -r --arg sid "$VTJSC_VPR_REF" '.data[] | select(.schemaId == $sid) | .credential.id')
-    if [ -z "$VTJSC_CRED_ID" ]; then
-      err "Could not find VTJSC for schema $CUSTOM_SCHEMA_ID"
-      exit 1
-    fi
-
-    ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/credential-types" \
-      -H 'Content-Type: application/json' \
-      -d "{\"name\": \"${ANONCREDS_NAME}\", \"version\": \"${ANONCREDS_VERSION}\", \"relatedJsonSchemaCredentialId\": \"${VTJSC_CRED_ID}\", \"supportRevocation\": ${ANONCREDS_SUPPORT_REVOCATION}}")
-    ANONCREDS_CRED_DEF_ID=$(echo "$ANONCREDS_RESULT" | jq -r '.id // empty')
-    ok "AnonCreds credential definition created: $ANONCREDS_CRED_DEF_ID"
-  fi
-else
-  log "Step 5: AnonCreds — skipped (ENABLE_ANONCREDS=false)"
-fi
+log "Step 5: AnonCreds credential definition — skipped (issuers create their own)"
 
 # =============================================================================
 # Save IDs
@@ -409,7 +385,6 @@ VS_AGENT_PUBLIC_PORT=${VS_AGENT_PUBLIC_PORT}
 USER_ACC=${USER_ACC}
 TRUST_REG_ID=${TRUST_REG_ID:-}
 CUSTOM_SCHEMA_ID=${CUSTOM_SCHEMA_ID:-}
-ANONCREDS_CRED_DEF_ID=${ANONCREDS_CRED_DEF_ID:-}
 EOF
 
 ok "IDs saved to ${OUTPUT_FILE}"
@@ -426,9 +401,6 @@ echo "  DID Document      : ${NGROK_URL}/.well-known/did.json"
 echo "  Admin API         : $ADMIN_API"
 echo "  Trust Registry    : ${TRUST_REG_ID:-n/a}"
 echo "  Schema ID         : ${CUSTOM_SCHEMA_ID:-n/a}"
-if [ -n "$ANONCREDS_CRED_DEF_ID" ]; then
-echo "  AnonCreds Cred Def: $ANONCREDS_CRED_DEF_ID"
-fi
 echo ""
 echo "  To stop:"
 echo "    docker stop $VS_AGENT_CONTAINER_NAME"

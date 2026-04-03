@@ -40,5 +40,5 @@ fi
 # Start the chatbot
 echo "Starting Verifier Chatbot..."
 cd "$CHATBOT_DIR"
-export VS_AGENT_ADMIN_URL CHATBOT_PORT
+export VS_AGENT_ADMIN_URL CHATBOT_PORT ISSUER_VS_PUBLIC_URL
 exec npx tsx src/index.ts

@@ -56,6 +56,13 @@ SERVICE_MIN_AGE="${SERVICE_MIN_AGE:-0}"
 SERVICE_TERMS="${SERVICE_TERMS:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
 SERVICE_PRIVACY="${SERVICE_PRIVACY:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
 
+# AnonCreds
+ENABLE_ANONCREDS="${ENABLE_ANONCREDS:-false}"
+ANONCREDS_NAME="${ANONCREDS_NAME:-example}"
+ANONCREDS_VERSION="${ANONCREDS_VERSION:-1.0}"
+ANONCREDS_SUPPORT_REVOCATION="${ANONCREDS_SUPPORT_REVOCATION:-false}"
+CUSTOM_SCHEMA_BASE_ID="${CUSTOM_SCHEMA_BASE_ID:-example}"
+
 # ---------------------------------------------------------------------------
 # Ensure veranad is available
 # ---------------------------------------------------------------------------
@@ -284,6 +291,46 @@ else
 fi
 
 # =============================================================================
+# STEP 5: AnonCreds credential definition (optional)
+# =============================================================================
+
+ANONCREDS_CRED_DEF_ID=""
+if [ "$ENABLE_ANONCREDS" = "true" ]; then
+  log "Step 5: AnonCreds credential definition"
+
+  # Check if already exists on this issuer agent
+  PUBLIC_URL="http://localhost:${VS_AGENT_PUBLIC_PORT}"
+  EXISTING_ANONCREDS=$(curl -sf "${PUBLIC_URL}/resources?resourceType=anonCredsCredDef" \
+    | jq -r '. | length' 2>/dev/null || echo "0")
+  if [ "${EXISTING_ANONCREDS:-0}" -gt 0 ]; then
+    ANONCREDS_CRED_DEF_ID=$(curl -sf "${PUBLIC_URL}/resources?resourceType=anonCredsCredDef" \
+      | jq -r '.[0].id // empty' 2>/dev/null || echo "")
+    ok "AnonCreds credential definition already exists: ${ANONCREDS_CRED_DEF_ID} — skipping"
+  else
+    # Find the VTJSC (json schema credential) for the custom schema
+    VTJSC_VPR_REF="vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}"
+    VTJSC_CRED_ID=$(curl -sf "${ADMIN_API}/v1/vt/json-schema-credentials" \
+      | jq -r --arg sid "$VTJSC_VPR_REF" '.data[] | select(.schemaId == $sid) | .credential.id')
+    if [ -z "$VTJSC_CRED_ID" ]; then
+      err "Could not find VTJSC for schema $CUSTOM_SCHEMA_ID"
+      exit 1
+    fi
+
+    ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/credential-types" \
+      -H 'Content-Type: application/json' \
+      -d "{\"name\": \"${ANONCREDS_NAME}\", \"version\": \"${ANONCREDS_VERSION}\", \"relatedJsonSchemaCredentialId\": \"${VTJSC_CRED_ID}\", \"supportRevocation\": ${ANONCREDS_SUPPORT_REVOCATION}}")
+    ANONCREDS_CRED_DEF_ID=$(echo "$ANONCREDS_RESULT" | jq -r '.id // empty')
+    if [ -z "$ANONCREDS_CRED_DEF_ID" ]; then
+      err "Failed to create AnonCreds credential definition. Response: $ANONCREDS_RESULT"
+      exit 1
+    fi
+    ok "AnonCreds credential definition created: $ANONCREDS_CRED_DEF_ID"
+  fi
+else
+  log "Step 5: AnonCreds — skipped (ENABLE_ANONCREDS=false)"
+fi
+
+# =============================================================================
 # Save IDs
 # =============================================================================
 
@@ -301,6 +348,7 @@ VS_AGENT_ADMIN_PORT=${VS_AGENT_ADMIN_PORT}
 VS_AGENT_PUBLIC_PORT=${VS_AGENT_PUBLIC_PORT}
 USER_ACC=${USER_ACC}
 CUSTOM_SCHEMA_ID=${CUSTOM_SCHEMA_ID:-}
+ANONCREDS_CRED_DEF_ID=${ANONCREDS_CRED_DEF_ID:-}
 EOF
 
 ok "IDs saved to ${OUTPUT_FILE}"
@@ -311,6 +359,9 @@ echo "  Agent DID    : $AGENT_DID"
 echo "  Public URL   : $NGROK_URL"
 echo "  Admin API    : $ADMIN_API"
 echo "  Schema ID    : ${CUSTOM_SCHEMA_ID:-n/a}"
+if [ -n "${ANONCREDS_CRED_DEF_ID:-}" ]; then
+echo "  AnonCreds Cred Def: $ANONCREDS_CRED_DEF_ID"
+fi
 echo ""
 echo "  To stop:"
 echo "    docker stop $VS_AGENT_CONTAINER_NAME"

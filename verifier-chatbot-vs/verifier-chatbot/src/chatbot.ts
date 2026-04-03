@@ -201,6 +201,7 @@ export class Chatbot {
         connectionId,
         requestedProofItems: [
           {
+            id: crypto.randomUUID(),
             credentialDefinitionId: this.schema.credentialDefinitionId,
             type: "verifiable-credential",
             attributes: attributeNames,

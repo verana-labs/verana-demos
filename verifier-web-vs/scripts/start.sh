@@ -42,5 +42,5 @@ echo "Starting Web Verifier..."
 echo "  Open http://localhost:$VERIFIER_PORT in your browser"
 echo ""
 cd "$VERIFIER_DIR"
-export VS_AGENT_ADMIN_URL VERIFIER_PORT
+export VS_AGENT_ADMIN_URL VERIFIER_PORT ISSUER_VS_PUBLIC_URL
 exec npx tsx src/index.ts

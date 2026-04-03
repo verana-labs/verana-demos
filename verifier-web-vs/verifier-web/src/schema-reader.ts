@@ -46,7 +46,8 @@ export async function discoverSchema(
   client: VsAgentClient,
   customSchemaBaseId: string,
   orgPublicUrl?: string,
-  orgClient?: VsAgentClient
+  orgClient?: VsAgentClient,
+  issuerPublicUrl?: string
 ): Promise<SchemaInfo> {
   let vtjscId: string;
   let schemaUrl: string;
@@ -194,11 +195,46 @@ export async function discoverSchema(
       attributes.map((a) => a.name).join(", ")
   );
 
+  // Discover the issuer's AnonCreds credential definition at boot time.
+  // Due to a vs-agent bug, verifiers must use the issuer's specific
+  // credential definition ID (not a jsonSchemaCredentialID).
+  const credentialDefinitionId = await discoverIssuerCredDef(issuerPublicUrl);
+
   return {
     vtjscId,
-    schemaId: schemaId || "",
+    schemaId: schemaId || vtjscId.replace(/-jsc\.json$/, ""),
     title,
     attributes,
-    credentialDefinitionId: credDefId,
+    credentialDefinitionId,
   };
+}
+
+async function discoverIssuerCredDef(
+  issuerPublicUrl?: string
+): Promise<string | undefined> {
+  if (!issuerPublicUrl) {
+    console.warn(
+      "ISSUER_VS_PUBLIC_URL not set — cannot discover issuer credential definition"
+    );
+    return undefined;
+  }
+
+  const url = `${issuerPublicUrl}/resources?resourceType=anonCredsCredDef`;
+  console.log(`Discovering issuer credential definition from ${url}`);
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(
+      `Failed to fetch credential definitions from issuer at ${url}: ${res.status}`
+    );
+  }
+  const resources = (await res.json()) as { id?: string }[];
+  if (!resources.length || !resources[0].id) {
+    throw new Error(
+      `No AnonCreds credential definition found on issuer at ${issuerPublicUrl}. ` +
+        `Make sure the issuer has created its credential definition.`
+    );
+  }
+  const credDefId = resources[0].id;
+  console.log(`Discovered issuer credential definition: ${credDefId}`);
+  return credDefId;
 }

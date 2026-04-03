@@ -25,6 +25,22 @@ export interface VtjscListResponse {
   data: VtjscEntry[];
 }
 
+export interface CreateCredentialTypeRequest {
+  name: string;
+  version: string;
+  attributes?: string[];
+  relatedJsonSchemaCredentialId?: string;
+  supportRevocation: boolean;
+}
+
+export interface CredentialType {
+  id: string;
+  name: string;
+  version: string;
+  relatedJsonSchemaCredentialId?: string;
+  [key: string]: unknown;
+}
+
 export interface OobInvitationResponse {
   invitationUrl: string;
   invitationId: string;
@@ -76,6 +92,20 @@ export class VsAgentClient {
     return this.request<VtjscListResponse>(
       "GET",
       "/v1/vt/json-schema-credentials"
+    );
+  }
+
+  async getCredentialTypes(): Promise<CredentialType[]> {
+    return this.request<CredentialType[]>("GET", "/v1/credential-types");
+  }
+
+  async createCredentialType(
+    params: CreateCredentialTypeRequest
+  ): Promise<CredentialType> {
+    return this.request<CredentialType>(
+      "POST",
+      "/v1/credential-types",
+      params
     );
   }
 

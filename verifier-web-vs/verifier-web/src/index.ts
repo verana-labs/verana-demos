@@ -23,11 +23,13 @@ async function main(): Promise<void> {
   const orgClient = orgPublicUrl
     ? undefined
     : new VsAgentClient({ ...config, vsAgentAdminUrl: config.orgVsAdminUrl });
+  const issuerPublicUrl = config.issuerVsPublicUrl || undefined;
   const schema = await discoverSchema(
     client,
     config.customSchemaBaseId,
     orgPublicUrl,
-    orgClient
+    orgClient,
+    issuerPublicUrl
   );
 
   // Initialize in-memory session store
