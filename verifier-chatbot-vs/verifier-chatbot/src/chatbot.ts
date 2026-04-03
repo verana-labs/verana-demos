@@ -21,6 +21,10 @@ export class Chatbot {
     this.config = config;
   }
 
+  async sendReceipts(connectionId: string, messageId: string): Promise<void> {
+    await this.client.sendReceipts(connectionId, messageId);
+  }
+
   private menuTitle(): string {
     return `${this.config.serviceName} Verifier`;
   }
@@ -28,6 +32,12 @@ export class Chatbot {
   private menuForState(state: SessionState): ContextualMenu {
     const title = this.menuTitle();
     switch (state) {
+      case SessionState.WELCOME:
+        return {
+          title,
+          description: "Ready to verify",
+          options: [{ id: "verify", title: "Verify my credential" }],
+        };
       case SessionState.REQUEST_PROOF:
         return {
           title,
@@ -91,22 +101,17 @@ export class Chatbot {
 
     switch (menuId) {
       case "abort":
-        this.store.resetSession(connectionId, SessionState.REQUEST_PROOF);
+        this.store.resetSession(connectionId, SessionState.WELCOME);
         await this.sendText(
           connectionId,
-          "Verification cancelled. Let's start over.",
-          SessionState.REQUEST_PROOF
+          "Verification cancelled. Use the menu when you're ready to try again.",
+          SessionState.WELCOME
         );
-        await this.sendProofRequest(connectionId);
         break;
 
+      case "verify":
       case "new_presentation":
         this.store.resetSession(connectionId, SessionState.REQUEST_PROOF);
-        await this.sendText(
-          connectionId,
-          "Starting a new verification.",
-          SessionState.REQUEST_PROOF
-        );
         await this.sendProofRequest(connectionId);
         break;
 
@@ -163,6 +168,14 @@ export class Chatbot {
     }
 
     switch (session.state) {
+      case SessionState.WELCOME:
+        await this.sendText(
+          connectionId,
+          "Use the menu to start credential verification.",
+          SessionState.WELCOME
+        );
+        break;
+
       case SessionState.REQUEST_PROOF:
         await this.sendText(
           connectionId,

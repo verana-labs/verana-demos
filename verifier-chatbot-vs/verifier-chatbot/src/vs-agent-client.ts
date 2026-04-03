@@ -113,6 +113,23 @@ export class VsAgentClient {
     );
   }
 
+  async sendReceipts(
+    connectionId: string,
+    messageId: string,
+    states: string[] = ["received", "viewed"]
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    await this.request<unknown>("POST", "/v1/message", {
+      type: "receipts",
+      connectionId,
+      receipts: states.map((state) => ({
+        message_id: messageId,
+        state,
+        timestamp: now,
+      })),
+    });
+  }
+
   async sendMessage(params: SendMessageRequest): Promise<void> {
     await this.request<unknown>("POST", "/v1/message", {
       type: "text",
