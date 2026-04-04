@@ -45,15 +45,16 @@ export function createRoutes(
 
       const session = store.createSession(presResponse.proofExchangeId);
 
-      // Generate QR code as data URL
-      const qrDataUrl = await QRCode.toDataURL(presResponse.url, {
+      // Use shortUrl for QR code (long URL exceeds QR capacity)
+      const qrUrl = presResponse.shortUrl || presResponse.url;
+      const qrDataUrl = await QRCode.toDataURL(qrUrl, {
         width: 300,
         margin: 2,
       });
 
       res.json({
         sessionId: session.sessionId,
-        invitationUrl: presResponse.url,
+        invitationUrl: qrUrl,
         qrDataUrl,
       });
     } catch (error) {
