@@ -65,6 +65,15 @@ export class Chatbot {
     });
   }
 
+  private ensureSession(connectionId: string) {
+    let session = this.store.getSession(connectionId);
+    if (!session) {
+      console.log(`Auto-creating session for ${connectionId}`);
+      session = this.store.createSession(connectionId);
+    }
+    return session;
+  }
+
   async onNewConnection(connectionId: string): Promise<void> {
     console.log(`New connection: ${connectionId}`);
     const session = this.store.createSession(connectionId);
@@ -85,11 +94,7 @@ export class Chatbot {
 
   async onMenuSelect(connectionId: string, menuId: string): Promise<void> {
     console.log(`Menu select from ${connectionId}: ${menuId}`);
-    const session = this.store.getSession(connectionId);
-    if (!session) {
-      console.warn(`No session for ${connectionId}, ignoring menu select`);
-      return;
-    }
+    const session = this.ensureSession(connectionId);
 
     switch (menuId) {
       case "abort":
@@ -120,11 +125,7 @@ export class Chatbot {
 
   async onTextMessage(connectionId: string, text: string): Promise<void> {
     console.log(`Text from ${connectionId}: ${text}`);
-    const session = this.store.getSession(connectionId);
-    if (!session) {
-      console.warn(`No session for ${connectionId}, ignoring text`);
-      return;
-    }
+    const session = this.ensureSession(connectionId);
 
     switch (session.state) {
       case SessionState.COLLECT_ATTRS:
