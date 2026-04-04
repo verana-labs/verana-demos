@@ -41,16 +41,19 @@ export interface CredentialType {
   [key: string]: unknown;
 }
 
-export interface OobInvitationResponse {
-  invitationUrl: string;
-  invitationId: string;
-  [key: string]: unknown;
+export interface RequestedCredential {
+  credentialDefinitionId: string;
+  attributes: string[];
 }
 
-export interface CreateOobProofRequestParams {
-  credentialDefinitionId?: string;
-  schemaId?: string;
-  attributes: string[];
+export interface PresentationRequestResponse {
+  proofExchangeId: string;
+  url: string;
+  shortUrl: string;
+}
+
+export interface CreatePresentationRequestParams {
+  requestedCredentials: RequestedCredential[];
 }
 
 export class VsAgentClient {
@@ -109,12 +112,12 @@ export class VsAgentClient {
     );
   }
 
-  async createOobProofRequest(
-    params: CreateOobProofRequestParams
-  ): Promise<OobInvitationResponse> {
-    return this.request<OobInvitationResponse>(
+  async createPresentationRequest(
+    params: CreatePresentationRequestParams
+  ): Promise<PresentationRequestResponse> {
+    return this.request<PresentationRequestResponse>(
       "POST",
-      "/v1/oob/proof-request",
+      "/v1/invitation/presentation-request",
       params
     );
   }
