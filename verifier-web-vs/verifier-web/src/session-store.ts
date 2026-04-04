@@ -2,7 +2,7 @@ import crypto from "crypto";
 
 export interface Session {
   sessionId: string;
-  invitationId: string;
+  proofExchangeId: string;
   status: "pending" | "verified";
   attributes: Record<string, string>;
   createdAt: number;
@@ -10,20 +10,20 @@ export interface Session {
 
 export class SessionStore {
   private sessions = new Map<string, Session>();
-  // Map invitationId → sessionId for webhook lookups
-  private invitationIndex = new Map<string, string>();
+  // Map proofExchangeId → sessionId for webhook lookups
+  private proofExIndex = new Map<string, string>();
 
-  createSession(invitationId: string): Session {
+  createSession(proofExchangeId: string): Session {
     const sessionId = crypto.randomUUID();
     const session: Session = {
       sessionId,
-      invitationId,
+      proofExchangeId,
       status: "pending",
       attributes: {},
       createdAt: Date.now(),
     };
     this.sessions.set(sessionId, session);
-    this.invitationIndex.set(invitationId, sessionId);
+    this.proofExIndex.set(proofExchangeId, sessionId);
     return session;
   }
 
@@ -31,8 +31,8 @@ export class SessionStore {
     return this.sessions.get(sessionId);
   }
 
-  getSessionByInvitationId(invitationId: string): Session | undefined {
-    const sessionId = this.invitationIndex.get(invitationId);
+  getSessionByProofExchangeId(proofExchangeId: string): Session | undefined {
+    const sessionId = this.proofExIndex.get(proofExchangeId);
     if (!sessionId) return undefined;
     return this.sessions.get(sessionId);
   }
@@ -52,7 +52,7 @@ export class SessionStore {
     const now = Date.now();
     for (const [id, session] of this.sessions) {
       if (now - session.createdAt > maxAgeMs) {
-        this.invitationIndex.delete(session.invitationId);
+        this.proofExIndex.delete(session.proofExchangeId);
         this.sessions.delete(id);
       }
     }

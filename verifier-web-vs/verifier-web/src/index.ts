@@ -45,7 +45,7 @@ async function main(): Promise<void> {
     console.log(`  Open http://localhost:${config.verifierPort} in your browser`);
     console.log(`Webhook endpoint:`);
     console.log(
-      `  POST http://localhost:${config.verifierPort}/webhooks/proof-received`
+      `  POST http://localhost:${config.verifierPort}/webhooks/message-received`
     );
   });
 

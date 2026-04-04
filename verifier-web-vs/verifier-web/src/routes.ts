@@ -34,23 +34,26 @@ export function createRoutes(
     try {
       const attributeNames = schema.attributes.map((a) => a.name);
 
-      const oobResponse = await client.createOobProofRequest({
-        credentialDefinitionId: schema.credentialDefinitionId,
-        schemaId: schema.schemaId,
-        attributes: attributeNames,
+      const presResponse = await client.createPresentationRequest({
+        requestedCredentials: [
+          {
+            credentialDefinitionId: schema.credentialDefinitionId!,
+            attributes: attributeNames,
+          },
+        ],
       });
 
-      const session = store.createSession(oobResponse.invitationId);
+      const session = store.createSession(presResponse.proofExchangeId);
 
       // Generate QR code as data URL
-      const qrDataUrl = await QRCode.toDataURL(oobResponse.invitationUrl, {
+      const qrDataUrl = await QRCode.toDataURL(presResponse.url, {
         width: 300,
         margin: 2,
       });
 
       res.json({
         sessionId: session.sessionId,
-        invitationUrl: oobResponse.invitationUrl,
+        invitationUrl: presResponse.url,
         qrDataUrl,
       });
     } catch (error) {
@@ -80,15 +83,16 @@ export function createRoutes(
     (req: Request, res: Response) => {
       try {
         const event = req.body as ProofReceivedEvent;
-        console.log("Webhook: proof-received", JSON.stringify(event).slice(0, 200));
+        console.log("Webhook: message-received", JSON.stringify(event).slice(0, 500));
 
-        const invitationId = event.invitationId || event.connectionId || "";
-        const session = store.getSessionByInvitationId(invitationId);
+        // Try to correlate by proofExchangeId from the message
+        const msg = (event as any).message || event;
+        const proofExId = msg.id || msg.proofExchangeId || msg.threadId || "";
+        const session = store.getSessionByProofExchangeId(proofExId);
 
         if (!session) {
-          // Try to find by iterating (fallback for different webhook payloads)
           console.warn(
-            `No session found for invitationId: ${invitationId}`
+            `No session found for proofExchangeId: ${proofExId}`
           );
           res.status(200).json({ ok: true });
           return;
