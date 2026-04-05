@@ -65,10 +65,7 @@ jobs:
             veranalabs/playground:${{ github.sha }}
             veranalabs/playground:${{ env.VS_NAME }}
           build-args: |
-            NEXT_PUBLIC_ISSUER_CHATBOT_VS_ADMIN_URL=https://issuer-chatbot-vs.${{ env.VS_NAME }}.demos.${{ env.NETWORK }}.verana.network
-            NEXT_PUBLIC_VERIFIER_CHATBOT_VS_ADMIN_URL=https://verifier-chatbot-vs.${{ env.VS_NAME }}.demos.${{ env.NETWORK }}.verana.network
             NEXT_PUBLIC_ISSUER_WEB_URL=https://app.issuer-web-vs.${{ env.VS_NAME }}.demos.${{ env.NETWORK }}.verana.network
-            NEXT_PUBLIC_VERIFIER_WEB_URL=https://app.verifier-web-vs.${{ env.VS_NAME }}.demos.${{ env.NETWORK }}.verana.network
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -109,6 +106,13 @@ jobs:
                     imagePullPolicy: Always
                     ports:
                       - containerPort: ${PORT}
+                    env:
+                      - name: ISSUER_CHATBOT_VS_ADMIN_URL
+                        value: "http://issuer-chatbot-${VS_NAME}:3000"
+                      - name: VERIFIER_CHATBOT_VS_ADMIN_URL
+                        value: "http://verifier-chatbot-${VS_NAME}:3000"
+                      - name: VERIFIER_WEB_URL
+                        value: "http://verifier-web-app-${VS_NAME}:4003"
           ---
           apiVersion: v1
           kind: Service
