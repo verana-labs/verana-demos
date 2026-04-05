@@ -120,7 +120,7 @@ export default function DemoSection({
           {state === "idle" && (
             <button
               onClick={start}
-              className="inline-flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium transition-colors"
+              className="inline-flex items-center gap-2 px-6 py-3 bg-[#667eea] hover:bg-[#5a6fd6] text-white rounded-xl font-medium transition-colors"
             >
               <QrCode className="w-5 h-5" />
               Generate QR Code
@@ -129,7 +129,7 @@ export default function DemoSection({
 
           {state === "loading" && (
             <div className="flex flex-col items-center gap-2 py-4">
-              <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
+              <Loader2 className="w-8 h-8 text-[#667eea] animate-spin" />
               <span className="text-sm text-gray-500">
                 Generating invitation...
               </span>
@@ -162,7 +162,7 @@ export default function DemoSection({
 
           {state === "success" && (
             <div className="flex flex-col items-center gap-4 w-full">
-              <CheckCircle2 className="w-12 h-12 text-emerald-500" />
+              <CheckCircle2 className="w-12 h-12 text-violet-500" />
               <p className="font-semibold text-gray-900">{resultLabel}</p>
               {Object.keys(claims).length > 0 && (
                 <ul className="w-full max-w-sm divide-y divide-gray-100">
@@ -171,7 +171,7 @@ export default function DemoSection({
                       key={key}
                       className="flex justify-between py-2 text-sm"
                     >
-                      <span className="font-medium text-emerald-700">
+                      <span className="font-medium text-violet-700">
                         {key}
                       </span>
                       <span className="text-gray-600">{value}</span>

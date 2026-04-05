@@ -14,7 +14,7 @@ export default function ConceptCard({
   color: string;
 }) {
   const bgMap: Record<string, string> = {
-    emerald: "bg-emerald-50 text-emerald-700",
+    violet: "bg-violet-50 text-violet-700",
     blue: "bg-blue-50 text-blue-700",
     amber: "bg-amber-50 text-amber-700",
     purple: "bg-purple-50 text-purple-700",
@@ -23,7 +23,7 @@ export default function ConceptCard({
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
       <div
-        className={`w-10 h-10 rounded-lg flex items-center justify-center mb-3 ${bgMap[color] || bgMap.emerald}`}
+        className={`w-10 h-10 rounded-lg flex items-center justify-center mb-3 ${bgMap[color] || bgMap.violet}`}
       >
         <Icon className="w-5 h-5" />
       </div>

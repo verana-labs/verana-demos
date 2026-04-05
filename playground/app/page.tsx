@@ -5,12 +5,9 @@ import {
   KeyRound,
   ScrollText,
   ShieldCheck,
-  Smartphone,
   MessageSquare,
   Globe,
   Building2,
-  Send,
-  Eye,
   ArrowDown,
   CheckCircle2,
   Lock,
@@ -71,14 +68,14 @@ const services = [
     role: "Credential Issuer",
     desc: "Issues credentials to users via a conversational DIDComm chatbot",
     icon: MessageSquare,
-    color: "text-emerald-600 bg-emerald-50",
+    color: "text-violet-600 bg-violet-50",
   },
   {
     name: "Issuer Web",
     role: "Credential Issuer",
     desc: "Issues credentials to users via a web form and QR code",
     icon: Globe,
-    color: "text-emerald-600 bg-emerald-50",
+    color: "text-violet-600 bg-violet-50",
   },
   {
     name: "Verifier Chatbot",
@@ -104,15 +101,20 @@ export default function PlaygroundPage() {
   return (
     <div className="min-h-screen">
       {/* Hero */}
-      <header className="relative bg-gradient-to-br from-emerald-700 via-emerald-600 to-teal-500 text-white">
+      <header className="relative bg-gradient-to-br from-[#764ba2] via-[#667eea] to-[#667eea] text-white">
         <div className="max-w-4xl mx-auto px-6 py-16 text-center">
-          <p className="text-emerald-200 text-sm font-medium tracking-wider uppercase mb-3">
+          <img
+            src="https://verana.io/logo.svg"
+            alt="Verana logo"
+            className="h-10 mx-auto mb-6 brightness-0 invert"
+          />
+          <p className="text-white/70 text-sm font-medium tracking-wider uppercase mb-3">
             Interactive Learning Environment
           </p>
           <h1 className="text-4xl md:text-5xl font-bold mb-4">
             Verana Playground
           </h1>
-          <p className="text-lg text-emerald-100 max-w-2xl mx-auto mb-8">
+          <p className="text-lg text-white/80 max-w-2xl mx-auto mb-8">
             Learn how verifiable credentials work by issuing and presenting them
             in real time. No prior knowledge required.
           </p>
@@ -141,7 +143,7 @@ export default function PlaygroundPage() {
               icon={Fingerprint}
               title="Verifiable Credential (VC)"
               description="A tamper-proof digital claim about a person or entity, issued by a trusted party. Think of it as a digital version of an ID card or diploma."
-              color="emerald"
+              color="violet"
             />
             <ConceptCard
               icon={KeyRound}
@@ -235,9 +237,11 @@ export default function PlaygroundPage() {
 
           <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
             <div className="flex flex-col sm:flex-row items-center gap-6">
-              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-400 flex items-center justify-center shrink-0">
-                <Smartphone className="w-10 h-10 text-white" />
-              </div>
+              <img
+                src="https://hologram.zone/logo.svg"
+                alt="Hologram Messaging"
+                className="w-20 h-20 rounded-2xl shrink-0"
+              />
               <div className="flex-1 text-center sm:text-left">
                 <h3 className="text-lg font-bold text-gray-900 mb-1">
                   Hologram Messaging
@@ -320,8 +324,8 @@ export default function PlaygroundPage() {
             />
           </div>
 
-          <div className="mt-6 rounded-xl bg-emerald-50 border border-emerald-200 p-4">
-            <p className="text-sm text-emerald-800">
+          <div className="mt-6 rounded-xl bg-violet-50 border border-violet-200 p-4">
+            <p className="text-sm text-violet-800">
               <strong>What happened?</strong> You created an encrypted DIDComm
               connection with each service. The issuer chatbot asked for your
               details and issued a signed credential. The verifier chatbot
@@ -411,7 +415,7 @@ export default function PlaygroundPage() {
 
           <div className="grid sm:grid-cols-2 gap-4">
             <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm flex gap-4">
-              <CheckCircle2 className="w-6 h-6 text-emerald-500 shrink-0 mt-0.5" />
+              <CheckCircle2 className="w-6 h-6 text-violet-500 shrink-0 mt-0.5" />
               <div>
                 <p className="font-semibold text-gray-900 text-sm mb-1">
                   Trust Established
@@ -472,7 +476,7 @@ export default function PlaygroundPage() {
           Verana Playground &middot; Powered by{" "}
           <a
             href="https://verana.io"
-            className="text-emerald-600 hover:underline"
+            className="text-violet-500 hover:underline"
             target="_blank"
             rel="noopener noreferrer"
           >
