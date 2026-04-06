@@ -1,6 +1,6 @@
 # Verana Demos
 
-Demo ecosystem with five Verifiable Services deployed via GitHub Actions to Kubernetes.
+Demo ecosystem with five Verifiable Services and an interactive playground, deployed via GitHub Actions to Kubernetes.
 
 ## Architecture
 
@@ -9,7 +9,8 @@ organization-vs          ← Parent organization (ECS credentials, Trust Registr
 ├── issuer-chatbot-vs    ← Issues credentials via DIDComm chatbot
 ├── issuer-web-vs        ← Issues credentials via web form + QR code
 ├── verifier-chatbot-vs  ← Verifies credentials via DIDComm chatbot
-└── verifier-web-vs      ← Verifies credentials via web page + QR code
+├── verifier-web-vs      ← Verifies credentials via web page + QR code
+└── playground           ← Interactive tutorial that ties all services together
 ```
 
 **organization-vs** is the parent: it obtains Organization + Service credentials from the ECS Trust Registry, creates its own Trust Registry with a custom schema, and registers an AnonCreds credential definition.
@@ -29,6 +30,7 @@ All services discover the **AnonCreds credential definition** by querying `/reso
 | `issuer-web-vs` | Issuer (web) | 4001 |
 | `verifier-chatbot-vs` | Verifier (chatbot) | 4002 |
 | `verifier-web-vs` | Verifier (web) | 4003 |
+| `playground` | Interactive tutorial | 3000 |
 
 ## Directory Structure
 
@@ -62,6 +64,7 @@ Workflows are numbered to indicate deployment order. **Run them in order** when 
 | 3 | Deploy Verifier Chatbot VS | `deploy` · `get-credentials` · `deploy-chatbot` · `all` |
 | 4 | Deploy Issuer Web VS | `deploy` · `get-credentials` · `deploy-web` · `all` |
 | 5 | Deploy Verifier Web VS | `deploy` · `get-credentials` · `deploy-web` · `all` |
+| 6 | Deploy Playground | Build & deploy (single step) |
 
 ### Deployment
 
@@ -73,6 +76,7 @@ Workflows are numbered to indicate deployment order. **Run them in order** when 
 
 - `<did-domain>` — VS Agent public endpoint (DID document, DIDComm, resources)
 - `app.<did-domain>` — Web/chatbot application (child services)
+- `playground.<vsname>.demos.<network>.verana.network` — Playground
 
 ## Local Development
 
@@ -96,3 +100,14 @@ source issuer-chatbot-vs/config.env
 ## Shared Code
 
 - `common/common.sh` — Shared shell helpers (logging, network config, VS Agent API, schema discovery, credential issuance/linking, CLI account setup)
+
+## Playground
+
+The playground (`playground/`) is a Next.js + TailwindCSS single-page application that guides newcomers through the Verifiable Trust ecosystem. It lets users issue and present credentials in real time using the demo services above.
+
+- **Framework:** Next.js (standalone output) + TailwindCSS
+- **API proxies:** Server-side API routes forward requests to internal cluster services (issuer-chatbot, verifier-chatbot, verifier-web)
+- **Issuer Web:** Opens in a new tab (the user fills a form, then scans the QR code generated on that page)
+- **Deployment:** Workflow #6 builds a Docker image and deploys it to the same namespace as the other services
+
+See [`spec-playground.md`](spec-playground.md) for the full specification.
