@@ -255,129 +255,152 @@ jobs:
           source common/common.sh
           set_network_vars "$NETWORK"
 
-          if [ -z "${AGENT_DID:-}" ]; then
-            AGENT_DID=$(curl -sf "${ADMIN_API}/v1/agent" | jq -r '.publicDid')
-          fi
+          AGENT_DID="${AGENT_DID:-$(curl -sf "${ADMIN_API}/v1/agent" | jq -r '.publicDid')}"
+          CONTROLLER_ADDR=$(veranad keys show "$USER_ACC" -a --keyring-backend test)
+          SCHEMA_BASE_ID="${CUSTOM_SCHEMA_BASE_ID:-example}"
+          log "Agent DID: $AGENT_DID"
+          log "Controller: $CONTROLLER_ADDR"
 
-          # Check if AnonCreds credential definition already exists — if so,
-          # the trust registry, VTJSC and cred def are already set up.
-          EXISTING_ANONCREDS=$(curl -sf "https://${INGRESS_HOST}/resources?resourceType=anonCredsCredDef" \
-            | jq -r '. | length' 2>/dev/null || echo "0")
-
-          if [ "${EXISTING_ANONCREDS:-0}" -gt 0 ]; then
-            ok "AnonCreds credential definition already exists — skipping trust registry setup"
+          # Load schema
+          if [ -n "${CUSTOM_SCHEMA_URL:-}" ]; then
+            SCHEMA_JSON=$(download_schema "$CUSTOM_SCHEMA_URL")
           else
-            # Load schema
-            if [ -n "${CUSTOM_SCHEMA_URL:-}" ]; then
-              SCHEMA_JSON=$(download_schema "$CUSTOM_SCHEMA_URL")
-            else
-              SCHEMA_JSON=$(jq -c '.' organization-vs/schema.json)
-            fi
-
-            # Check if a trust registry already exists for this schema
-            if EXISTING=$(has_trust_registry_for_schema "$AGENT_DID" "$SCHEMA_JSON"); then
-              EXISTING_TR_ID=$(echo "$EXISTING" | awk '{print $1}')
-              EXISTING_CS_ID=$(echo "$EXISTING" | awk '{print $2}')
-              ok "Trust registry already exists for this schema (TR=$EXISTING_TR_ID, CS=$EXISTING_CS_ID)"
-              ok "Skipping trust registry creation — nothing to do."
-            else
-              log "No existing trust registry found for this schema — creating resources"
-
-              EGF_DOC_DIGEST=$(compute_sri_digest "$EGF_DOC_URL")
-              ok "EGF digest: $EGF_DOC_DIGEST"
-
-              TR_REGISTRY_URL="https://${INGRESS_HOST}"
-
-              check_balance "$USER_ACC"
-              TRUST_REG_ID=$(submit_tx "create_trust_registry" "trust_registry_id" \
-                veranad tx tr create-trust-registry \
-                "$AGENT_DID" "${EGF_LANGUAGE:-en}" "$EGF_DOC_URL" "$EGF_DOC_DIGEST" \
-                --aka "$TR_REGISTRY_URL")
-
-              check_balance "$USER_ACC"
-              CUSTOM_SCHEMA_ID=$(submit_tx "create_credential_schema" "credential_schema_id" \
-                veranad tx cs create-credential-schema "$TRUST_REG_ID" "$SCHEMA_JSON" \
-                --issuer-grantor-validation-validity-period '{"value":0}' \
-                --verifier-grantor-validation-validity-period '{"value":0}' \
-                --issuer-validation-validity-period '{"value":0}' \
-                --verifier-validation-validity-period '{"value":0}' \
-                --holder-validation-validity-period '{"value":0}' \
-                3 1)
-
-              check_balance "$USER_ACC"
-              EFFECTIVE_FROM=$(future_timestamp 15)
-              ROOT_PERM=$(submit_tx "create_root_permission" "root_permission_id" \
-                veranad tx perm create-root-perm \
-                "$CUSTOM_SCHEMA_ID" "$AGENT_DID" \
-                "${VALIDATION_FEES:-0}" "${ISSUANCE_FEES:-0}" "${VERIFICATION_FEES:-0}" \
-                --effective-from "$EFFECTIVE_FROM")
-              sleep 21
-
-              # Obtain ISSUER permission via VP flow (ECOSYSTEM mode)
-              check_balance "$USER_ACC"
-              START_RESULT=$(veranad tx perm start-perm-vp \
-                issuer "$ROOT_PERM" \
-                --did "$AGENT_DID" \
-                --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-                --fees "$FEES" --gas auto --node "$NODE_RPC" \
-                --output json -y 2>&1 | extract_tx_json)
-              START_TX_HASH=$(echo "$START_RESULT" | jq -r '.txhash // empty')
-              if [ -z "$START_TX_HASH" ]; then
-                echo "::error::Failed to start ISSUER VP. Output: $START_RESULT"
-                exit 1
-              fi
-              ok "VP start TX submitted: $START_TX_HASH"
-              sleep 8
-              ISSUER_PERM=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id")
-              if [ -z "$ISSUER_PERM" ]; then
-                sleep 6
-                ISSUER_PERM=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id")
-              fi
-              if [ -z "$ISSUER_PERM" ]; then
-                echo "::error::Could not extract permission ID from start-perm-vp"
-                exit 1
-              fi
-              ok "Validation process started: perm_id=$ISSUER_PERM"
-
-              check_balance "$USER_ACC"
-              VALIDATE_RESULT=$(veranad tx perm set-perm-vp-validated \
-                "$ISSUER_PERM" \
-                --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-                --fees "$FEES" --gas auto --node "$NODE_RPC" \
-                --output json -y 2>&1 | extract_tx_json)
-              VALIDATE_TX_HASH=$(echo "$VALIDATE_RESULT" | jq -r '.txhash // empty')
-              if [ -z "$VALIDATE_TX_HASH" ]; then
-                echo "::error::Failed to validate ISSUER perm. Output: $VALIDATE_RESULT"
-                exit 1
-              fi
-              sleep 6
-              ok "ISSUER permission validated: perm_id=$ISSUER_PERM"
-
-              # Create VTJSC for custom schema
-              curl -sf -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
-                -H 'Content-Type: application/json' \
-                -d "{\"schemaBaseId\": \"${CUSTOM_SCHEMA_BASE_ID:-example}\", \"jsonSchemaRef\": \"vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}\"}" \
-                -o /dev/null
-
-              ok "Trust Registry created: ID=$TRUST_REG_ID, Schema=$CUSTOM_SCHEMA_ID"
-
-              # Set up AnonCreds credential definition
-              if [ "${ENABLE_ANONCREDS:-false}" = "true" ]; then
-                log "Setting up AnonCreds credential definition..."
-                VTJSC_VPR_REF="vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}"
-                VTJSC_CRED_ID=$(curl -sf "${ADMIN_API}/v1/vt/json-schema-credentials" \
-                  | jq -r --arg sid "$VTJSC_VPR_REF" '.data[] | select(.schemaId == $sid) | .credential.id')
-                if [ -z "$VTJSC_CRED_ID" ]; then
-                  echo "::error::Could not find VTJSC for schema $CUSTOM_SCHEMA_ID"
-                  exit 1
-                fi
-                ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/credential-types" \
-                  -H 'Content-Type: application/json' \
-                  -d "{\"name\": \"${ANONCREDS_NAME:-example}\", \"version\": \"${ANONCREDS_VERSION:-1.0}\", \"relatedJsonSchemaCredentialId\": \"${VTJSC_CRED_ID}\", \"supportRevocation\": ${ANONCREDS_SUPPORT_REVOCATION:-false}}")
-                ok "AnonCreds credential definition created"
-              fi
-            fi
+            SCHEMA_JSON=$(jq -c '.' organization-vs/schema.json)
           fi
+          LOCAL_CANON=$(echo "$SCHEMA_JSON" | jq -Sc 'del(."$id")')
+
+          # =================================================================
+          # Step 1: Find or create trust registry
+          # =================================================================
+
+          TR_URL="${INDEXER_URL}/verana/tr/v1/list?controller=${CONTROLLER_ADDR}&only_active=true"
+          log "Querying indexer for existing trust registries: $TR_URL"
+          TR_RESP=$(curl -s -w '\n%{http_code}' "$TR_URL")
+          TR_HTTP=$(echo "$TR_RESP" | tail -1)
+          TR_BODY=$(echo "$TR_RESP" | sed '$d')
+          if [ "$TR_HTTP" -ne 200 ]; then
+            echo "::error::Indexer query failed (HTTP $TR_HTTP). Cannot safely proceed — aborting to avoid duplicate trust registries."
+            echo "::error::Response: $TR_BODY"
+            exit 1
+          fi
+
+          # Filter client-side for trust registries matching our DID, sorted by ID ascending
+          MATCHING_TR_IDS=$(echo "$TR_BODY" | jq -r --arg did "$AGENT_DID" \
+            '[.trust_registries[] | select(.did == $did)] | sort_by(.id) | .[].id')
+
+          TR_ID=$(echo "$MATCHING_TR_IDS" | head -1)
+
+          if [ -n "$TR_ID" ]; then
+            ok "Found existing active trust registry: TR=$TR_ID (DID=$AGENT_DID)"
+
+            # Archive any duplicate active trust registries (keep only the oldest)
+            STALE_TR_IDS=$(echo "$MATCHING_TR_IDS" | tail -n +2)
+            if [ -n "$STALE_TR_IDS" ]; then
+              log "Found $(echo "$STALE_TR_IDS" | wc -l | tr -d ' ') duplicate active trust registries — archiving..."
+              for STALE_TR in $STALE_TR_IDS; do
+                log "Archiving duplicate trust registry: TR=$STALE_TR"
+                check_balance "$USER_ACC"
+                veranad tx tr archive-trust-registry "$STALE_TR" true \
+                  --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+                  --fees "$FEES" --node "$NODE_RPC" \
+                  --output json -y > /dev/null 2>&1 || true
+                ok "Archived duplicate trust registry: TR=$STALE_TR"
+              done
+            fi
+          else
+            log "No active trust registry found for DID=$AGENT_DID — creating..."
+            EGF_DOC_DIGEST=$(compute_sri_digest "$EGF_DOC_URL")
+            ok "EGF digest: $EGF_DOC_DIGEST"
+
+            check_balance "$USER_ACC"
+            TR_ID=$(submit_tx "create_trust_registry" "trust_registry_id" \
+              veranad tx tr create-trust-registry \
+              "$AGENT_DID" "${EGF_LANGUAGE:-en}" "$EGF_DOC_URL" "$EGF_DOC_DIGEST" \
+              --aka "https://${INGRESS_HOST}")
+            ok "Trust registry created: TR=$TR_ID"
+          fi
+
+          # =================================================================
+          # Step 2: Find or create credential schema + root permission
+          # =================================================================
+
+          CS_URL="${INDEXER_URL}/verana/cs/v1/list?tr_id=${TR_ID}&only_active=true"
+          log "Querying indexer for existing schemas: $CS_URL"
+          CS_RESP=$(curl -s -w '\n%{http_code}' "$CS_URL")
+          CS_HTTP=$(echo "$CS_RESP" | tail -1)
+          CS_BODY=$(echo "$CS_RESP" | sed '$d')
+          if [ "$CS_HTTP" -ne 200 ]; then
+            echo "::error::Indexer schema query failed (HTTP $CS_HTTP). Aborting."
+            echo "::error::Response: $CS_BODY"
+            exit 1
+          fi
+
+          CS_ID=""
+          while IFS= read -r entry; do
+            [ -z "$entry" ] && continue
+            ON_CHAIN_JS=$(echo "$entry" | jq -r '.json_schema // empty')
+            [ -z "$ON_CHAIN_JS" ] && continue
+            ON_CHAIN_CANON=$(echo "$ON_CHAIN_JS" | jq -Sc 'del(."$id")')
+            if [ "$LOCAL_CANON" = "$ON_CHAIN_CANON" ]; then
+              CS_ID=$(echo "$entry" | jq -r '.id')
+              break
+            fi
+          done <<< "$(echo "$CS_BODY" | jq -c '.schemas[]?' 2>/dev/null)"
+
+          if [ -n "$CS_ID" ]; then
+            ok "Schema already exists on-chain: CS=$CS_ID — skipping creation"
+          else
+            log "Creating credential schema..."
+            check_balance "$USER_ACC"
+            CS_ID=$(submit_tx "create_credential_schema" "credential_schema_id" \
+              veranad tx cs create-credential-schema "$TR_ID" "$SCHEMA_JSON" \
+              --issuer-grantor-validation-validity-period '{"value":0}' \
+              --verifier-grantor-validation-validity-period '{"value":0}' \
+              --issuer-validation-validity-period '{"value":0}' \
+              --verifier-validation-validity-period '{"value":0}' \
+              --holder-validation-validity-period '{"value":0}' \
+              3 1)
+            ok "Credential schema created: CS=$CS_ID"
+
+            # Create root permission
+            check_balance "$USER_ACC"
+            EFFECTIVE_FROM=$(future_timestamp 15)
+            ROOT_PERM=$(submit_tx "create_root_permission" "root_permission_id" \
+              veranad tx perm create-root-perm \
+              "$CS_ID" "$AGENT_DID" \
+              "${VALIDATION_FEES:-0}" "${ISSUANCE_FEES:-0}" "${VERIFICATION_FEES:-0}" \
+              --effective-from "$EFFECTIVE_FROM")
+            ok "Root permission created: PERM=$ROOT_PERM"
+            sleep 21
+          fi
+
+          # =================================================================
+          # Step 3: Find or create JSC
+          # =================================================================
+
+          VPR_REF="vpr:verana:${CHAIN_ID}/cs/v1/js/${CS_ID}"
+          JSC_LIST=$(curl -sf "${ADMIN_API}/v1/vt/json-schema-credentials" 2>/dev/null || echo '{"data":[]}')
+          EXISTING_JSC=$(echo "$JSC_LIST" | jq -r \
+            --arg sid "$VPR_REF" \
+            '.data[] | select(.schemaId == $sid) | .credential.id // empty' 2>/dev/null | head -1)
+
+          if [ -n "$EXISTING_JSC" ]; then
+            ok "JSC already exists for CS=$CS_ID (cred=$EXISTING_JSC) — skipping"
+          else
+            log "Creating JSC for '${SCHEMA_BASE_ID}' (CS=$CS_ID)..."
+            JSC_RESP=$(curl -s -w '\n%{http_code}' -X POST "${ADMIN_API}/v1/vt/json-schema-credentials" \
+              -H 'Content-Type: application/json' \
+              -d "{\"schemaBaseId\": \"${SCHEMA_BASE_ID}\", \"jsonSchemaRef\": \"${VPR_REF}\"}")
+            JSC_HTTP=$(echo "$JSC_RESP" | tail -1)
+            JSC_BODY_RESP=$(echo "$JSC_RESP" | sed '$d')
+            if [ "$JSC_HTTP" -ge 400 ]; then
+              echo "::error::Failed to create JSC for '${SCHEMA_BASE_ID}' (HTTP $JSC_HTTP): $JSC_BODY_RESP"
+              exit 1
+            fi
+            ok "JSC created for '${SCHEMA_BASE_ID}' (CS=$CS_ID)"
+          fi
+
+          ok "Trust Registry setup complete: TR=$TR_ID, CS=$CS_ID"
 
       # -----------------------------------------------------------------------
       # CLEANUP
