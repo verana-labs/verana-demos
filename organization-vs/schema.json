@@ -1,8 +1,8 @@
 {
   "$id": "https://verana-labs.github.io/verifiable-trust-spec/schemas/v4/example.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Example Credential",
-  "description": "An example credential schema for demonstrating Verana Trust Registry capabilities.",
+  "title": "Student Credential",
+  "description": "A Student Credential Schema for UCD.",
   "type": "object",
   "properties": {
     "credentialSubject": {
@@ -10,21 +10,36 @@
       "properties": {
         "firstName": {
           "type": "string",
-          "description": "The first name of the subject"
+          "description": "First Name"
         },
         "lastName": {
           "type": "string",
-          "description": "The last name of the subject"
+          "description": "Last Name"
         },
-        "countryOfResidence": {
+        "dateOfBirth": {
           "type": "string",
-          "description": "The country of residence (ISO 3166-1 alpha-2)"
+          "description": "Date of Birth"
+        },
+        "studentNumber": {
+          "type": "string",
+          "description": "The student number"
+        },
+        "emailAddress": {
+          "type": "string",
+          "description": "The student's email address"
+        },
+        "programme": {
+          "type": "string",
+          "description": "The student's degree programme"
         }
       },
       "required": [
         "firstName",
         "lastName",
-        "countryOfResidence"
+        "dateOfBirth",
+        "studentNumber",
+        "emailAddress",
+        "programme"
       ]
     }
   }
