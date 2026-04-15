@@ -308,7 +308,7 @@ function renderPage(serviceName: string, schema: SchemaInfo): string {
 </head>
 <body>
   <header>
-    <img class="logo" src="https://verana.io/logo.svg" alt="Verana logo" />
+    <img class="logo" src="https://github-production-user-asset-6210df.s3.amazonaws.com/67415127/578020202-2d1092fd-e7e1-4e0f-b3a6-c699db4b8804.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAVCODYLSA53PQK4ZA%2F20260415%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260415T182329Z&X-Amz-Expires=300&X-Amz-Signature=a4a2bae3a021ed61788e8c465ba4c621c57ab2d0fc9dbcf43f67e616d05bb039&X-Amz-SignedHeaders=host&response-content-type=image%2Fjpeg" alt="UCD logo" />
     <h1>${escapeHtml(serviceName)}</h1>
     <p>Credential Issuer</p>
   </header>
@@ -317,7 +317,7 @@ function renderPage(serviceName: string, schema: SchemaInfo): string {
       <!-- STEP 1: Form -->
       <div id="form-view">
         <h2>Issue ${escapeHtml(schema.title)}</h2>
-        <p class="sub">Fill in the credential attributes below, then scan the QR code with Hologram Messaging.</p>
+        <p class="sub">Fill in your student information below, then scan the QR code with Hologram Messaging.</p>
         <form id="issue-form">
           ${formFields}
           <button type="submit" id="issue-btn">Generate QR Code</button>
