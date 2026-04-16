@@ -211,7 +211,7 @@ function renderPage(serviceName: string, schema: SchemaInfo): string {
       text-align: center;
       box-shadow: 0 2px 10px rgba(0,0,0,0.1);
     }
-    header img.logo { height: 40px; margin-bottom: 0.5rem; }
+    header img.logo { height: 80px; margin-bottom: 0.5rem; }
     header h1 { font-size: 1.5rem; font-weight: 600; }
     header p { font-size: 0.9rem; opacity: 0.85; margin-top: 0.3rem; }
     main {
