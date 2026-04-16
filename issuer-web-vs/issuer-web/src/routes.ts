@@ -310,14 +310,17 @@ function renderPage(serviceName: string, schema: SchemaInfo): string {
   <header>
     <img class="logo" src="https://gist.github.com/user-attachments/assets/2d1092fd-e7e1-4e0f-b3a6-c699db4b8804" alt="UCD logo" />
     <h1>${escapeHtml(serviceName)}</h1>
-    <p>Credential Issuer</p>
+    <p>Receive Credentials for UCD Student Login</p>
   </header>
   <main>
     <div class="card">
       <!-- STEP 1: Form -->
       <div id="form-view">
         <h2>Issue ${escapeHtml(schema.title)}</h2>
-        <p class="sub">Fill in your student information below, then scan the QR code with Hologram Messaging.</p>
+        <p class="sub">Start your remote enrolment. You will need a smartphone with a camera and a valid identity document. 
+        Please fill in your student information below and click Generate QR Code. If the registration processes successfully,
+         you will see a QR code. Please download and install the Hologram Messaging app on your phone and scan the QR code.
+         This will download a credential to your wallet. You may present this credential when required to login to UCD services.</p>
         <form id="issue-form">
           ${formFields}
           <button type="submit" id="issue-btn">Generate QR Code</button>
