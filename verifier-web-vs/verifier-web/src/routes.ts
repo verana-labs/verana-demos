@@ -277,7 +277,7 @@ function renderPage(serviceName: string, schemaTitle: string): string {
 </head>
 <body>
   <header>
-    <img class="logo" src="https://gist.github.com/user-attachments/assets/2d1092fd-e7e1-4e0f-b3a6-c699db4b8804" alt="UCD logo" />
+    <img class="logo" src="https://gist.github.com/user-attachments/assets/d98e2aa4-1af9-420f-94a2-ae387fc3b6db" alt="UCD logo" />
     <h1>${serviceName}</h1>
     <p>Credential Verifier</p>
   </header>
