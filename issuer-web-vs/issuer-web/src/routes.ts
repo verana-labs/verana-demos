@@ -205,7 +205,7 @@ function renderPage(serviceName: string, schema: SchemaInfo): string {
     }
     header {
       width: 100%;
-      background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+      background: linear-gradient(135deg, #11998e 0%, #003366 100%);
       color: white;
       padding: 1.5rem 2rem;
       text-align: center;
@@ -289,7 +289,7 @@ function renderPage(serviceName: string, schema: SchemaInfo): string {
     .success-icon { font-size: 3rem; margin-bottom: 0.5rem; text-align: center; }
     .error-icon { font-size: 3rem; margin-bottom: 0.5rem; text-align: center; }
     button, .btn {
-      background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+      background: linear-gradient(135deg, #11998e 0%, #003366 100%);
       color: white;
       border: none;
       padding: 0.75rem 2rem;
@@ -317,10 +317,10 @@ function renderPage(serviceName: string, schema: SchemaInfo): string {
       <!-- STEP 1: Form -->
       <div id="form-view">
         <h2>Issue ${escapeHtml(schema.title)}</h2>
-        <p class="sub">Start your remote enrolment. You will need a smartphone with a camera and a valid identity document. 
-        Please fill in your student information below and click Generate QR Code. If the registration processes successfully,
-         you will see a QR code. Please download and install the Hologram Messaging app on your phone and scan the QR code.
-         This will download a credential to your wallet. You may present this credential when required to login to UCD services.</p>
+        <p class="sub">Start your remote enrolment. You will need a smartphone with a camera and the Hologram App installed on your phone. </p>         
+        <p class="sub">Please fill in your student information below and click Generate QR Code.
+        <p class="sub">If the registration processes successfully, you will see a QR code. Please open the Hologram app and scan the QR code. A credential will be downloaded to your wallet. </p>
+        <p class="sub">You may present this credential when required to login to UCD services.</p>
         <form id="issue-form">
           ${formFields}
           <button type="submit" id="issue-btn">Generate QR Code</button>
