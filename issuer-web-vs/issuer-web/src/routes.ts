@@ -318,9 +318,7 @@ function renderPage(serviceName: string, schema: SchemaInfo): string {
       <div id="form-view">
         <h2>Issue ${escapeHtml(schema.title)}</h2>
         <p class="sub">Start your remote enrolment. You will need a smartphone with a camera and the Hologram App installed on your phone. </p>         
-        <p class="sub">Please fill in your student information below and click Generate QR Code.
-        <p class="sub">If the registration processes successfully, you will see a QR code. Please open the Hologram app and scan the QR code. A credential will be downloaded to your wallet. </p>
-        <p class="sub">You may present this credential when required to login to UCD services.</p>
+        <p class="sub">Please fill in your student information below and click Generate QR Code.</p>
         <form id="issue-form">
           ${formFields}
           <button type="submit" id="issue-btn">Generate QR Code</button>
@@ -330,7 +328,8 @@ function renderPage(serviceName: string, schema: SchemaInfo): string {
       <!-- STEP 2: QR code -->
       <div id="qr-view" class="hidden">
         <h2>Scan to receive credential</h2>
-        <p class="sub">Ask the holder to scan this QR code with Hologram Messaging.</p>
+        <p class="sub">The registration has processed successfully. Please open the Hologram app and scan the QR code. A credential will then be downloaded to your wallet. </p>
+        <p class="sub">Please verify and accept the credential in the app. </p>
         <div id="qr-container"><div class="spinner"></div></div>
         <p class="status" id="status-text">Waiting for holder to connect...</p>
         <button type="button" id="cancel-btn">Cancel</button>
