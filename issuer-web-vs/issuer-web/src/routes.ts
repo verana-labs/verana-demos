@@ -308,7 +308,7 @@ function renderPage(serviceName: string, schema: SchemaInfo): string {
 </head>
 <body>
   <header>
-    <img class="logo" src="https://gist.github.com/user-attachments/assets/2d1092fd-e7e1-4e0f-b3a6-c699db4b8804" alt="UCD logo" />
+    <img class="logo" src="https://gist.github.com/salmanqureshi-olr/88659be683fde320ef7d31ed44e528e0" alt="UCD logo" />
     <h1>${escapeHtml(serviceName)}</h1>
     <p>Receive Credentials for UCD Student Login</p>
   </header>
