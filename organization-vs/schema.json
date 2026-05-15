@@ -2,7 +2,7 @@
   "$id": "https://verana-labs.github.io/verifiable-trust-spec/schemas/v4/example.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Student Credential",
-  "description": "A Student Credential Schema for UCD.",
+  "description": "A Student Credential Schema for the University.",
   "type": "object",
   "properties": {
     "credentialSubject": {
