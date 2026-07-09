@@ -3,7 +3,7 @@
 # Network and service name are derived from the branch name.
 # The workflow substitutes __NETWORK__, __VS_NAME__ and __CHILD_VS_NAME__ placeholders at deploy time.
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v1.9.1
+chartVersion: v1.11.0
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network

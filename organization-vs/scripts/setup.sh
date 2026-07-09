@@ -87,7 +87,7 @@ SERVICE_PRIVACY="${SERVICE_PRIVACY:-https://verana-labs.github.io/governance-doc
 
 if ! command -v veranad &> /dev/null; then
   log "veranad not found — downloading..."
-  VERANAD_VERSION="${VERANAD_VERSION:-v0.9.4}"
+  VERANAD_VERSION="${VERANAD_VERSION:-v0.9.5}"
   PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
   case "$ARCH" in
