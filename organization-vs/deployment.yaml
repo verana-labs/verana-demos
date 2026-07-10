@@ -4,7 +4,7 @@
 # The workflow substitutes __NETWORK__ and __VS_NAME__ placeholders at deploy time.
 # Example: vs/testnet-example → __NETWORK__=testnet, __VS_NAME__=example
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v1.9.1
+chartVersion: v1.11.0
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network

@@ -65,7 +65,7 @@ ISSUER_VS_PUBLIC_URL="${ISSUER_VS_PUBLIC_URL:-http://localhost:3005}"
 
 if ! command -v veranad &> /dev/null; then
   log "veranad not found — downloading..."
-  VERANAD_VERSION="${VERANAD_VERSION:-v0.9.4}"
+  VERANAD_VERSION="${VERANAD_VERSION:-v0.9.5}"
   PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
   case "$ARCH" in
