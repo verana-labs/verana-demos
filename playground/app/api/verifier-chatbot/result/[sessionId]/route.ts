@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-// Creates a playground verification session on the verifier-chatbot app:
-// a fresh connection invitation plus a session id the page can poll for
-// the verified attributes (see /api/verifier-chatbot/result/[sessionId]).
-export async function POST() {
+export async function GET(
+  _req: Request,
+  { params }: { params: Promise<{ sessionId: string }> },
+) {
+  const { sessionId } = await params;
   const url = process.env.VERIFIER_CHATBOT_URL;
   if (!url) {
     return NextResponse.json(
@@ -14,7 +15,7 @@ export async function POST() {
     );
   }
 
-  const res = await fetch(`${url}/api/invitation`, { method: "POST" });
+  const res = await fetch(`${url}/api/result/${sessionId}`);
   if (!res.ok) {
     return NextResponse.json(
       { error: `Upstream ${res.status}` },

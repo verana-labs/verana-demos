@@ -109,10 +109,14 @@ jobs:
                     env:
                       - name: ISSUER_CHATBOT_VS_ADMIN_URL
                         value: "http://issuer-chatbot-${VS_NAME}:3000"
-                      - name: VERIFIER_CHATBOT_VS_ADMIN_URL
-                        value: "http://verifier-chatbot-${VS_NAME}:3000"
+                      - name: VERIFIER_CHATBOT_URL
+                        value: "http://verifier-chatbot-app-${VS_NAME}:4002"
                       - name: VERIFIER_WEB_URL
                         value: "http://verifier-web-app-${VS_NAME}:4003"
+                      - name: DEMOS_BASE_DOMAIN
+                        value: "${VS_NAME}.demos.${NETWORK}.verana.network"
+                      - name: VERANA_NETWORK
+                        value: "${NETWORK}"
           ---
           apiVersion: v1
           kind: Service

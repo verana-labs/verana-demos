@@ -5,9 +5,6 @@ import {
   KeyRound,
   ScrollText,
   ShieldCheck,
-  MessageSquare,
-  Globe,
-  Building2,
   ArrowDown,
   CheckCircle2,
   Lock,
@@ -18,6 +15,7 @@ import SectionHeading from "./components/SectionHeading";
 import TrustTriangle from "./components/TrustTriangle";
 import ConceptCard from "./components/ConceptCard";
 import DemoSection from "./components/DemoSection";
+import EcosystemSection from "./components/EcosystemSection";
 import { config } from "./config";
 
 /* ------------------------------------------------------------------ */
@@ -41,57 +39,39 @@ async function fetchVerifierWebInvitation() {
   };
 }
 
-async function pollVerifierWebResult(sessionId: string) {
-  const res = await fetch(`/api/verifier-web/result/${sessionId}`);
+// Creates a playground session on the verifier chatbot: a fresh connection
+// invitation plus a session id to poll for the verified attributes.
+async function fetchVerifierChatbotSession() {
+  const res = await fetch("/api/verifier-chatbot/invitation", {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error("Failed to create verification session");
+  return (await res.json()) as { sessionId: string; invitationUrl: string };
+}
+
+// The verifier services report the presented attributes under `attributes`;
+// DemoSection renders them as `claims`.
+async function pollVerifyResult(url: string) {
+  const res = await fetch(url);
   if (!res.ok) throw new Error("Poll failed");
-  return (await res.json()) as {
+  const data = (await res.json()) as {
     status: string;
+    attributes?: Record<string, string>;
     claims?: Record<string, string>;
     error?: string;
   };
+  return {
+    status: data.status,
+    claims: data.attributes ?? data.claims,
+    error: data.error,
+  };
 }
 
-/* ------------------------------------------------------------------ */
-/*  Ecosystem table data                                               */
-/* ------------------------------------------------------------------ */
+const pollVerifierWebResult = (sessionId: string) =>
+  pollVerifyResult(`/api/verifier-web/result/${sessionId}`);
 
-const services = [
-  {
-    name: "Organization",
-    role: "Trust Anchor",
-    desc: "Registers with the Ecosystem, creates a Trust Registry and credential schema",
-    icon: Building2,
-    color: "text-amber-600 bg-amber-50",
-  },
-  {
-    name: "Issuer Chatbot",
-    role: "Credential Issuer",
-    desc: "Issues credentials to users via a conversational DIDComm chatbot",
-    icon: MessageSquare,
-    color: "text-violet-600 bg-violet-50",
-  },
-  {
-    name: "Issuer Web",
-    role: "Credential Issuer",
-    desc: "Issues credentials to users via a web form and QR code",
-    icon: Globe,
-    color: "text-violet-600 bg-violet-50",
-  },
-  {
-    name: "Verifier Chatbot",
-    role: "Credential Verifier",
-    desc: "Requests and verifies credential presentations via DIDComm chatbot",
-    icon: MessageSquare,
-    color: "text-purple-600 bg-purple-50",
-  },
-  {
-    name: "Verifier Web",
-    role: "Credential Verifier",
-    desc: "Requests and verifies credential presentations via web page and QR code",
-    icon: Globe,
-    color: "text-purple-600 bg-purple-50",
-  },
-];
+const pollVerifierChatbotResult = (sessionId: string) =>
+  pollVerifyResult(`/api/verifier-chatbot/result/${sessionId}`);
 
 /* ------------------------------------------------------------------ */
 /*  Page                                                               */
@@ -189,40 +169,7 @@ export default function PlaygroundPage() {
             subtitle="Five services that form a complete trust ecosystem"
           />
 
-          <p className="text-gray-600 mb-6 leading-relaxed">
-            This playground connects to five live services. The{" "}
-            <strong>Organization</strong> is the trust anchor — it registers
-            with the Verana Ecosystem, creates a Trust Registry and credential
-            schema. The four child services inherit trust from it: two{" "}
-            <strong>Issuers</strong> that create credentials and two{" "}
-            <strong>Verifiers</strong> that validate them.
-          </p>
-
-          <div className="space-y-3">
-            {services.map((s) => (
-              <div
-                key={s.name}
-                className="flex items-start gap-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
-              >
-                <div
-                  className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${s.color}`}
-                >
-                  <s.icon className="w-5 h-5" />
-                </div>
-                <div>
-                  <div className="flex items-baseline gap-2">
-                    <span className="font-semibold text-gray-900">
-                      {s.name}
-                    </span>
-                    <span className="text-xs text-gray-400 font-medium">
-                      {s.role}
-                    </span>
-                  </div>
-                  <p className="text-sm text-gray-500 mt-0.5">{s.desc}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+          <EcosystemSection />
         </section>
 
         {/* ============================================================ */}
@@ -315,12 +262,11 @@ export default function PlaygroundPage() {
                 "Tap \"Generate QR Code\" below",
                 "Scan the QR code with Hologram Messaging",
                 "The verifier requests a proof — approve it in your wallet",
-                "The verifier confirms your credential without contacting the issuer",
+                "The verified attributes appear here automatically",
               ]}
-              fetchInvitation={() =>
-                fetchChatbotInvitation("/api/verifier-chatbot/invitation")
-              }
-              resultLabel="Connected! Complete the verification in Hologram."
+              fetchInvitation={() => fetchVerifierChatbotSession()}
+              pollResult={(sessionId) => pollVerifierChatbotResult(sessionId)}
+              resultLabel="Credential Verified!"
             />
           </div>
 

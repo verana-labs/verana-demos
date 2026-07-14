@@ -3,6 +3,7 @@ import { loadConfig } from "./config";
 import { VsAgentClient } from "./vs-agent-client";
 import { discoverSchema } from "./schema-reader";
 import { SessionStore } from "./session-store";
+import { PlaygroundSessionStore } from "./playground-sessions";
 import { Chatbot } from "./chatbot";
 import { createWebhookRouter } from "./webhooks";
 
@@ -34,16 +35,17 @@ async function main(): Promise<void> {
     issuerPublicUrl
   );
 
-  // Initialize session store
+  // Initialize session stores (chat sessions + playground QR sessions)
   const store = new SessionStore(config.databaseUrl);
+  const playground = new PlaygroundSessionStore();
 
   // Create chatbot
   const chatbot = new Chatbot(client, store, schema, config);
 
-  // Start Express server with webhook routes
+  // Start Express server with webhook + playground routes
   const app = express();
   app.use(express.json());
-  app.use("/", createWebhookRouter(chatbot));
+  app.use("/", createWebhookRouter(chatbot, client, playground));
 
   app.listen(config.chatbotPort, () => {
     console.log(`Verifier Chatbot listening on port ${config.chatbotPort}`);
@@ -53,6 +55,12 @@ async function main(): Promise<void> {
     );
     console.log(
       `  POST http://localhost:${config.chatbotPort}/message-received`
+    );
+    console.log(
+      `  POST http://localhost:${config.chatbotPort}/api/invitation`
+    );
+    console.log(
+      `  GET  http://localhost:${config.chatbotPort}/api/result/:sessionId`
     );
     console.log(
       `  GET  http://localhost:${config.chatbotPort}/health`
