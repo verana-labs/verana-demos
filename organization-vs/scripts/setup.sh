@@ -94,9 +94,9 @@ if ! command -v veranad &> /dev/null; then
     x86_64)  ARCH="amd64" ;;
     aarch64|arm64) ARCH="arm64" ;;
   esac
-  curl -sfL "https://github.com/verana-labs/verana/releases/download/${VERANAD_VERSION}/veranad-${PLATFORM}-${ARCH}" \
+  curl -sfL "https://github.com/verana-labs/verana-node/releases/download/${VERANAD_VERSION}/veranad-${PLATFORM}-${ARCH}" \
     -o /usr/local/bin/veranad 2>/dev/null || {
-    curl -sfL "https://github.com/verana-labs/verana/releases/download/${VERANAD_VERSION}/veranad-${PLATFORM}-${ARCH}" \
+    curl -sfL "https://github.com/verana-labs/verana-node/releases/download/${VERANAD_VERSION}/veranad-${PLATFORM}-${ARCH}" \
       -o "${HOME}/.local/bin/veranad"
     export PATH="${HOME}/.local/bin:$PATH"
   }

@@ -74,7 +74,7 @@ if ! command -v veranad &> /dev/null; then
     aarch64|arm64) ARCH="arm64" ;;
   esac
   mkdir -p "${HOME}/.local/bin"
-  curl -sfL "https://github.com/verana-labs/verana/releases/download/${VERANAD_VERSION}/veranad-${PLATFORM}-${ARCH}" \
+  curl -sfL "https://github.com/verana-labs/verana-node/releases/download/${VERANAD_VERSION}/veranad-${PLATFORM}-${ARCH}" \
     -o "${HOME}/.local/bin/veranad"
   chmod +x "${HOME}/.local/bin/veranad"
   export PATH="${HOME}/.local/bin:$PATH"
