@@ -106,6 +106,16 @@ export class VsAgentClient {
     return this.request<AgentInfo>("GET", "/v1/agent");
   }
 
+  /** Create a fresh out-of-band connection invitation. */
+  async createConnectionInvitation(): Promise<{ url: string }> {
+    try {
+      return await this.request<{ url: string }>("POST", "/v1/invitation");
+    } catch {
+      // Older VS-Agent versions only expose the (deprecated) GET variant.
+      return this.request<{ url: string }>("GET", "/v1/invitation");
+    }
+  }
+
   async getJsonSchemaCredentials(): Promise<VtjscListResponse> {
     return this.request<VtjscListResponse>(
       "GET",

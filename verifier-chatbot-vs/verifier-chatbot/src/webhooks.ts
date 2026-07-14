@@ -1,5 +1,7 @@
 import { Router, Request, Response } from "express";
 import { Chatbot } from "./chatbot";
+import { VsAgentClient } from "./vs-agent-client";
+import { PlaygroundSessionStore } from "./playground-sessions";
 
 interface ConnectionStateEvent {
   connectionId: string;
@@ -28,8 +30,39 @@ interface MessageReceivedEvent {
   [key: string]: unknown;
 }
 
-export function createWebhookRouter(chatbot: Chatbot): Router {
+export function createWebhookRouter(
+  chatbot: Chatbot,
+  client: VsAgentClient,
+  playground: PlaygroundSessionStore
+): Router {
   const router = Router();
+
+  // Playground: create a QR session (fresh invitation + pollable session id)
+  router.post("/api/invitation", async (_req: Request, res: Response) => {
+    try {
+      const { url } = await client.createConnectionInvitation();
+      const session = playground.createSession();
+      res.json({ sessionId: session.sessionId, invitationUrl: url });
+    } catch (error) {
+      console.error("Failed to create playground invitation:", error);
+      res.status(500).json({ error: "Failed to create invitation" });
+    }
+  });
+
+  // Playground: poll a session for the verification result
+  router.get("/api/result/:sessionId", (req: Request, res: Response) => {
+    const session = playground.getSession(req.params.sessionId as string);
+    if (!session) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    if (session.status === "verified") {
+      res.json({ status: "verified", attributes: session.attributes });
+    } else {
+      res.json({ status: session.status });
+    }
+  });
 
   router.post(
     "/connection-state-updated",
@@ -45,6 +78,12 @@ export function createWebhookRouter(chatbot: Chatbot): Router {
           event.state === "completed" ||
           event.state === "active"
         ) {
+          const claimed = playground.claimNextPending(event.connectionId);
+          if (claimed) {
+            console.log(
+              `Connection ${event.connectionId} claimed playground session ${claimed.sessionId}`
+            );
+          }
           await chatbot.onNewConnection(event.connectionId);
         }
 
@@ -86,6 +125,7 @@ export function createWebhookRouter(chatbot: Chatbot): Router {
         msg.submittedProofItems
       ) {
         const claims = extractClaims(msg);
+        playground.markVerified(connectionId, claims);
         await chatbot.onProofSubmit(connectionId, claims);
       }
       // Handle menu selection
