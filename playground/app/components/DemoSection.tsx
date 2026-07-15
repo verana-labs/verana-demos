@@ -10,6 +10,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
+import ServiceTrustCard from "./ServiceTrustCard";
 
 type DemoState = "idle" | "loading" | "qr" | "polling" | "success" | "error";
 
@@ -17,6 +18,8 @@ interface DemoSectionProps {
   title: string;
   description: string;
   steps: string[];
+  /** Demo service behind this card; shows its live Proof-of-Trust. */
+  serviceId?: string;
   fetchInvitation?: () => Promise<{
     sessionId?: string;
     qrDataUrl?: string;
@@ -36,6 +39,7 @@ export default function DemoSection({
   title,
   description,
   steps,
+  serviceId,
   fetchInvitation,
   pollResult,
   resultLabel = "Result",
@@ -104,6 +108,11 @@ export default function DemoSection({
       <div className="p-6 border-b border-gray-100">
         <h3 className="text-lg font-bold text-gray-900 mb-1">{title}</h3>
         <p className="text-sm text-gray-500">{description}</p>
+        {serviceId ? (
+          <div className="mt-4">
+            <ServiceTrustCard serviceId={serviceId} />
+          </div>
+        ) : null}
       </div>
 
       <div className="p-6">
