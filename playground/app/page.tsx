@@ -242,6 +242,7 @@ export default function PlaygroundPage() {
           <div className="grid md:grid-cols-2 gap-6">
             <DemoSection
               title="Step A — Get a Credential"
+              serviceId="issuer-chatbot-vs"
               description="Connect to the Issuer Chatbot to receive a verifiable credential."
               steps={[
                 "Tap \"Generate QR Code\" below",
@@ -257,6 +258,7 @@ export default function PlaygroundPage() {
 
             <DemoSection
               title="Step B — Present Your Credential"
+              serviceId="verifier-chatbot-vs"
               description="Connect to the Verifier Chatbot and prove your identity."
               steps={[
                 "Tap \"Generate QR Code\" below",
@@ -301,6 +303,7 @@ export default function PlaygroundPage() {
           <div className="grid md:grid-cols-2 gap-6">
             <DemoSection
               title="Step A — Issue via Web"
+              serviceId="issuer-web-vs"
               description="Fill in the form on the Issuer Web, then scan the QR code to receive a credential."
               steps={[
                 "Tap \"Open Issuer Web\" below",
@@ -313,6 +316,7 @@ export default function PlaygroundPage() {
 
             <DemoSection
               title="Step B — Verify via Web"
+              serviceId="verifier-web-vs"
               description="Present your credential and see the verified attributes appear live."
               steps={[
                 "Tap \"Generate QR Code\" below",

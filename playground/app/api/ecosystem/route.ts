@@ -1,4 +1,13 @@
 import { NextResponse } from "next/server";
+import {
+  SERVICE_IDS,
+  BASE_DOMAIN,
+  NETWORK,
+  INDEXER_URL,
+  FRONTEND_URL,
+  fetchJson,
+  serviceDid,
+} from "../../lib/server-env";
 
 export const dynamic = "force-dynamic";
 
@@ -7,46 +16,6 @@ export const dynamic = "force-dynamic";
 // and the network indexer (trust registry, credential schema, permission
 // tree). Everything is best-effort — a missing upstream just yields nulls
 // and the page renders without the live extras.
-
-const SERVICE_IDS = [
-  "organization-vs",
-  "issuer-chatbot-vs",
-  "issuer-web-vs",
-  "verifier-chatbot-vs",
-  "verifier-web-vs",
-] as const;
-
-const BASE_DOMAIN =
-  process.env.DEMOS_BASE_DOMAIN || "main.demos.testnet.verana.network";
-const NETWORK = process.env.VERANA_NETWORK || "testnet";
-const INDEXER_URL =
-  process.env.INDEXER_URL || `https://idx.${NETWORK}.verana.network`;
-const FRONTEND_URL =
-  process.env.VERANA_FRONTEND_URL || `https://app.${NETWORK}.verana.network`;
-
-async function fetchJson<T>(url: string): Promise<T | null> {
-  try {
-    const res = await fetch(url, {
-      next: { revalidate: 600 },
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
-}
-
-type DidDoc = { id?: string; alsoKnownAs?: string[] };
-
-/** Canonical DID of a service: the did:webvh alias when present. */
-async function serviceDid(host: string): Promise<string | null> {
-  const doc = await fetchJson<DidDoc>(`https://${host}/.well-known/did.json`);
-  if (!doc) return null;
-  return (
-    doc.alsoKnownAs?.find((d) => d.startsWith("did:webvh:")) ?? doc.id ?? null
-  );
-}
 
 type TrustRegistryEntry = { id: number; did: string };
 type SchemaEntry = { id: number; tr_id: number; json_schema: string };
