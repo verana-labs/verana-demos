@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Verifier Web VS — Local Setup
+# Verifier Web VS — Local Setup (Verana v0.10.1+, devnet only)
 # =============================================================================
 #
 # This script sets up the Verifier Web VS Agent locally (child service):
-#   1. Deploys the VS Agent via Docker + ngrok
-#   2. Sets up the veranad CLI account
-#   3. Obtains a Service credential from organization-vs
-#   4. Self-creates a VERIFIER permission for the organization-vs schema
+#   1. Creates verifier-web-vs's own Corporation and grants it operator
+#      authorization for MsgSelfCreateParticipant
+#   2. Deploys the VS Agent via Docker + ngrok, bound to that Corporation,
+#      in AGENT_MODE=delegated against organization-vs
+#   3. Waits for EcsBootstrapService's delegated flow to obtain the Service
+#      credential from organization-vs automatically (no script action)
+#   4. Discovers organization-vs's "example" schema + root participant, and
+#      self-creates a VERIFIER participant (OPEN mode — one-shot tx, no
+#      DIDComm handshake, no validation needed)
+#   5. Discovers the AnonCreds credential definition from issuer-web-vs
 #
-# Requires organization-vs to be running and its admin API reachable.
+# Requires organization-vs to be running and reachable (public URL + admin API).
 #
 # Prerequisites:
-#   - Docker, ngrok (authenticated), curl, jq
-#   - Organization VS running (ORG_VS_ADMIN_URL reachable)
+#   - Docker, ngrok (authenticated), curl, jq, veranad
+#   - MNEMONIC (or VERIFIER_WEB_VS_MNEMONIC) env var — a funded devnet account
 #
 # Usage:
 #   source verifier-web-vs/config.env
-#   ./verifier-web-vs/scripts/setup.sh
+#   MNEMONIC="..." ./verifier-web-vs/scripts/setup.sh
 #
 # =============================================================================
 
@@ -34,29 +40,23 @@ source "${REPO_ROOT}/common/common.sh"
 # Configuration — override via environment or config.env
 # ---------------------------------------------------------------------------
 
-NETWORK="${NETWORK:-testnet}"
+NETWORK="${NETWORK:-devnet}"
 VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:latest}"
 VS_AGENT_CONTAINER_NAME="${VS_AGENT_CONTAINER_NAME:-verifier-web-vs}"
 VS_AGENT_ADMIN_PORT="${VS_AGENT_ADMIN_PORT:-3008}"
 VS_AGENT_PUBLIC_PORT="${VS_AGENT_PUBLIC_PORT:-3009}"
 VS_AGENT_DATA_DIR="${VS_AGENT_DATA_DIR:-${SERVICE_DIR}/data}"
 SERVICE_NAME="${SERVICE_NAME:-Example Web Verifier}"
-USER_ACC="${USER_ACC:-org-vs-admin}"
+USER_ACC="${USER_ACC:-verifier-web-vs-devnet-admin}"
 OUTPUT_FILE="${OUTPUT_FILE:-${SERVICE_DIR}/ids.env}"
+MNEMONIC="${MNEMONIC:-${VERIFIER_WEB_VS_MNEMONIC:-}}"
 
-# Organization VS
 ORG_VS_ADMIN_URL="${ORG_VS_ADMIN_URL:-http://localhost:3000}"
 ORG_VS_PUBLIC_URL="${ORG_VS_PUBLIC_URL:-}"
 
-# Service details
-SERVICE_TYPE="${SERVICE_TYPE:-VerifierService}"
+SERVICE_TYPE="${SERVICE_TYPE:-WEB_PORTAL}"
 SERVICE_DESCRIPTION="${SERVICE_DESCRIPTION:-Web-based credential verifier for the Verana demo ecosystem}"
-SERVICE_LOGO_URL="${SERVICE_LOGO_URL:-https://verana.io/logo.svg}"
-SERVICE_MIN_AGE="${SERVICE_MIN_AGE:-0}"
-SERVICE_TERMS="${SERVICE_TERMS:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
-SERVICE_PRIVACY="${SERVICE_PRIVACY:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
 
-# Issuer VS — discover credential definition from this issuer's public API
 ISSUER_VS_PUBLIC_URL="${ISSUER_VS_PUBLIC_URL:-http://localhost:3005}"
 
 # ---------------------------------------------------------------------------
@@ -65,7 +65,7 @@ ISSUER_VS_PUBLIC_URL="${ISSUER_VS_PUBLIC_URL:-http://localhost:3005}"
 
 if ! command -v veranad &> /dev/null; then
   log "veranad not found — downloading..."
-  VERANAD_VERSION="${VERANAD_VERSION:-v0.9.5}"
+  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.2-dev.2}"
   PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
   case "$ARCH" in
@@ -80,20 +80,62 @@ if ! command -v veranad &> /dev/null; then
   ok "veranad installed: $(veranad version)"
 fi
 
-# ---------------------------------------------------------------------------
-# Set network-specific variables
-# ---------------------------------------------------------------------------
-
 set_network_vars "$NETWORK"
 log "Network: $NETWORK (chain: $CHAIN_ID)"
 
 ADMIN_API="http://localhost:${VS_AGENT_ADMIN_PORT}"
 
+if ! curl -sf "${ORG_VS_ADMIN_URL}/api" > /dev/null 2>&1; then
+  err "Organization VS admin API not reachable at ${ORG_VS_ADMIN_URL}"
+  err "Make sure organization-vs is running and ORG_VS_ADMIN_URL is set correctly."
+  exit 1
+fi
+ok "Organization VS admin API reachable: $ORG_VS_ADMIN_URL"
+
+ORG_PUBLIC_API="${ORG_VS_PUBLIC_URL:-http://localhost:${ORG_VS_PUBLIC_PORT:-3001}}"
+ORG_DID=$(curl -sf "${ORG_PUBLIC_API}/.well-known/did.json" | jq -r '.id // empty')
+if [ -z "$ORG_DID" ]; then
+  err "Could not fetch organization-vs DID from $ORG_PUBLIC_API"
+  exit 1
+fi
+ok "organization-vs DID: $ORG_DID"
+
 # =============================================================================
-# STEP 1: Deploy VS Agent
+# STEP 1: Set up veranad CLI account (also the agent's own on-chain identity)
 # =============================================================================
 
-log "Step 1: Deploy VS Agent"
+log "Step 1: Set up veranad CLI account"
+
+if [ -n "$MNEMONIC" ]; then
+  echo "$MNEMONIC" | veranad keys add "$USER_ACC" --recover --keyring-backend test 2>/dev/null || true
+  ok "Mnemonic imported for account '$USER_ACC'"
+elif ! veranad keys show "$USER_ACC" --keyring-backend test > /dev/null 2>&1; then
+  err "No MNEMONIC provided and account '$USER_ACC' does not exist."
+  err "Export MNEMONIC (or VERIFIER_WEB_VS_MNEMONIC) with a funded devnet account and re-run."
+  exit 1
+fi
+setup_veranad_account "$USER_ACC" "$FAUCET_URL"
+
+# =============================================================================
+# STEP 2: Create Corporation (skipped if CORPORATION_ID already set)
+# =============================================================================
+
+log "Step 2: Corporation"
+
+if [ -n "${CORPORATION_ID:-}" ]; then
+  ok "Using existing CORPORATION_ID=$CORPORATION_ID"
+  resolve_corporation "$CORPORATION_ID"
+else
+  create_corporation "did:example:verifier-web-vs-${CHAIN_ID}" "$EGF_DOC_URL" "" \
+    '["/verana.pp.v1.MsgSelfCreateParticipant"]'
+  ok "Corporation created: CORPORATION_ID=$CORPORATION_ID — add this to verifier-web-vs/config.env to skip next time"
+fi
+
+# =============================================================================
+# STEP 3: Deploy VS Agent, bound to the Corporation, delegated to organization-vs
+# =============================================================================
+
+log "Step 3: Deploy VS Agent"
 
 docker rm -f "$VS_AGENT_CONTAINER_NAME" 2>/dev/null || true
 rm -rf "${VS_AGENT_DATA_DIR}/data/wallet"
@@ -132,6 +174,15 @@ docker run --platform linux/amd64 -d \
   -e "AGENT_PUBLIC_DID=did:webvh:${NGROK_DOMAIN}" \
   -e "AGENT_LABEL=${SERVICE_NAME}" \
   -e "ENABLE_PUBLIC_API_SWAGGER=true" \
+  -e "VERANA_RPC_ENDPOINT_URL=${NODE_RPC}" \
+  -e "VERANA_INDEXER_BASE_URL=${INDEXER_URL}" \
+  -e "VERANA_CHAIN_ID=${CHAIN_ID}" \
+  -e "VERANA_ACCOUNT_MNEMONIC=${MNEMONIC}" \
+  -e "VERANA_CORPORATION_ID=${CORPORATION_ID}" \
+  -e "AGENT_MODE=delegated" \
+  -e "AGENT_DELEGATED_PARENT_VS_DID=${ORG_DID}" \
+  -e "SELF_ISSUED_VTC_SERVICE_TYPE=${SERVICE_TYPE}" \
+  -e "SELF_ISSUED_VTC_SERVICE_DESCRIPTION=${SERVICE_DESCRIPTION}" \
   --name "$VS_AGENT_CONTAINER_NAME" \
   "$VS_AGENT_IMAGE"
 
@@ -153,110 +204,32 @@ if [ -z "$AGENT_DID" ] || [ "$AGENT_DID" = "null" ]; then
 fi
 ok "Agent DID: $AGENT_DID"
 
-# =============================================================================
-# STEP 2: Set up veranad CLI account
-# =============================================================================
-
-log "Step 2: Set up veranad CLI account"
-setup_veranad_account "$USER_ACC" "$FAUCET_URL"
+log "Waiting for the delegated Service credential to be obtained (up to 30s)..."
+sleep 20
+ok "Check: ${NGROK_URL}/.well-known/did.json"
 
 # =============================================================================
-# STEP 3: Obtain Service credential from organization-vs
+# STEP 4: Discover organization-vs's "example" schema and self-create VERIFIER
 # =============================================================================
 
-log "Step 3: Obtain Service credential from organization-vs"
+log "Step 4: Self-create VERIFIER participant for organization-vs's 'example' schema"
 
-# Verify organization-vs admin API is reachable (use /api which is always exposed)
-if ! curl -sf "${ORG_VS_ADMIN_URL}/api" > /dev/null 2>&1; then
-  err "Organization VS admin API not reachable at ${ORG_VS_ADMIN_URL}"
-  err "Make sure organization-vs is running and ORG_VS_ADMIN_URL is set correctly."
+CUSTOM_SCHEMA_ID=$(discover_custom_schema_id "${ORG_PUBLIC_API}/.well-known/did.json") || {
+  err "Could not discover the 'example' schema from organization-vs's DID document"
   exit 1
-fi
-ok "Organization VS admin API reachable: $ORG_VS_ADMIN_URL"
-
-# Skip if Service credential is already linked on the local agent
-if has_linked_vp "$NGROK_URL" "service"; then
-  ok "Service credential already linked — skipping"
-else
-  SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
-  SERVICE_JSC_URL=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '1p')
-
-  SERVICE_LOGO_DATA_URI=$(download_logo_data_uri "$SERVICE_LOGO_URL")
-
-  SERVICE_CLAIMS=$(jq -n \
-    --arg id "$AGENT_DID" \
-    --arg name "$SERVICE_NAME" \
-    --arg type "$SERVICE_TYPE" \
-    --arg desc "$SERVICE_DESCRIPTION" \
-    --arg logo "$SERVICE_LOGO_DATA_URI" \
-    --argjson age "$SERVICE_MIN_AGE" \
-    --arg terms "$SERVICE_TERMS" \
-    --arg privacy "$SERVICE_PRIVACY" \
-    '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
-
-  issue_remote_and_link "$ORG_VS_ADMIN_URL" "$ADMIN_API" "service" "$SERVICE_JSC_URL" "$AGENT_DID" "$SERVICE_CLAIMS"
-fi
-
-# =============================================================================
-# STEP 4: Self-create VERIFIER permission for organization-vs schema
-# =============================================================================
-
-log "Step 4: Self-create VERIFIER permission for organization-vs schema"
-
-# Discover custom schema from organization-vs DID document
-ORG_PUBLIC_API="${ORG_VS_PUBLIC_URL:-}"
-if [ -z "$ORG_PUBLIC_API" ]; then
-  ORG_PUBLIC_PORT="${ORG_VS_PUBLIC_PORT:-3001}"
-  ORG_PUBLIC_API="http://localhost:${ORG_PUBLIC_PORT}"
-fi
-
-ORG_DID_DOC=$(curl -sf "${ORG_PUBLIC_API}/.well-known/did.json" 2>/dev/null || echo "{}")
-if [ "$ORG_DID_DOC" = "{}" ]; then
-  err "Could not fetch organization-vs DID document from $ORG_PUBLIC_API"
-  err "Set ORG_VS_PUBLIC_URL to the organization-vs public endpoint."
-  exit 1
-fi
-
-CUSTOM_VP_URL=$(echo "$ORG_DID_DOC" | jq -r '
-  .service[] |
-  select(.type == "LinkedVerifiablePresentation") |
-  select(.id | test("organization-jsc-vp|service-jsc-vp") | not) |
-  select(.id | test("jsc-vp")) |
-  .serviceEndpoint' | head -1)
-
-if [ -z "$CUSTOM_VP_URL" ]; then
-  err "No custom schema VTJSC found in organization-vs DID document"
-  exit 1
-fi
-ok "Custom schema VTJSC VP: $CUSTOM_VP_URL"
-
-CUSTOM_VP=$(curl -sf "$CUSTOM_VP_URL")
-CUSTOM_SCHEMA_REF=$(echo "$CUSTOM_VP" | jq -r '.verifiableCredential[0].credentialSubject.jsonSchema."$ref" // empty')
-CUSTOM_SCHEMA_ID=$(echo "$CUSTOM_SCHEMA_REF" | grep -oE '[0-9]+$')
-
-if [ -z "$CUSTOM_SCHEMA_ID" ]; then
-  err "Could not extract schema ID from organization-vs VTJSC"
-  exit 1
-fi
+}
 ok "Organization-vs custom schema ID: $CUSTOM_SCHEMA_ID"
 
-# Check if VERIFIER permission already exists
-if EXISTING_PERM=$(find_active_perm "$CUSTOM_SCHEMA_ID" "VERIFIER" "$AGENT_DID"); then
-  ok "Active VERIFIER permission already exists: $EXISTING_PERM — skipping"
-  VERIFIER_PERM_ID="$EXISTING_PERM"
+if EXISTING_PARTICIPANT_ID=$(find_active_participant "$CUSTOM_SCHEMA_ID" "$PP_IDX_ROLE_VERIFIER" "$AGENT_DID"); then
+  ok "Active VERIFIER participant already exists: $EXISTING_PARTICIPANT_ID — skipping"
+  VERIFIER_PARTICIPANT_ID="$EXISTING_PARTICIPANT_ID"
 else
-  # Self-create VERIFIER permission (verifier_mode=OPEN, so no VP needed)
-  log "Creating VERIFIER permission..."
-  check_balance "$USER_ACC"
-  EFFECTIVE_FROM=$(future_timestamp 15)
-
-  VERIFIER_PERM_ID=$(submit_tx "create_permission" "permission_id" \
-    veranad tx perm create-perm "$CUSTOM_SCHEMA_ID" verifier "$AGENT_DID" \
-    --effective-from "$EFFECTIVE_FROM")
-
-  ok "VERIFIER permission created: $VERIFIER_PERM_ID"
-  sleep 21
-  ok "VERIFIER permission should now be active"
+  ROOT_PARTICIPANT_ID=$(find_root_participant "$CUSTOM_SCHEMA_ID") || {
+    err "Could not find the root participant for schema $CUSTOM_SCHEMA_ID"
+    exit 1
+  }
+  VERIFIER_PARTICIPANT_ID=$(self_create_participant "$CORPORATION" "$PP_ROLE_VERIFIER" "$ROOT_PARTICIPANT_ID" "$AGENT_DID")
+  ok "VERIFIER participant created: $VERIFIER_PARTICIPANT_ID"
 fi
 
 # =============================================================================
@@ -291,8 +264,9 @@ VS_AGENT_CONTAINER_NAME=${VS_AGENT_CONTAINER_NAME}
 VS_AGENT_ADMIN_PORT=${VS_AGENT_ADMIN_PORT}
 VS_AGENT_PUBLIC_PORT=${VS_AGENT_PUBLIC_PORT}
 USER_ACC=${USER_ACC}
+CORPORATION_ID=${CORPORATION_ID}
 CUSTOM_SCHEMA_ID=${CUSTOM_SCHEMA_ID:-}
-VERIFIER_PERM_ID=${VERIFIER_PERM_ID:-}
+VERIFIER_PARTICIPANT_ID=${VERIFIER_PARTICIPANT_ID:-}
 ANONCREDS_CRED_DEF_ID=${ANONCREDS_CRED_DEF_ID:-}
 EOF
 
@@ -303,8 +277,9 @@ echo ""
 echo "  Agent DID         : $AGENT_DID"
 echo "  Public URL        : $NGROK_URL"
 echo "  Admin API         : $ADMIN_API"
+echo "  Corporation ID    : $CORPORATION_ID"
 echo "  Schema ID         : ${CUSTOM_SCHEMA_ID:-n/a}"
-echo "  Verifier Perm     : ${VERIFIER_PERM_ID:-n/a}"
+echo "  Verifier Participant: ${VERIFIER_PARTICIPANT_ID:-n/a}"
 if [ -n "${ANONCREDS_CRED_DEF_ID:-}" ]; then
 echo "  AnonCreds Cred Def: $ANONCREDS_CRED_DEF_ID (from issuer-web-vs)"
 fi

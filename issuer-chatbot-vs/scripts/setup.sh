@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Issuer Chatbot VS — Local Setup
+# Issuer Chatbot VS — Local Setup (Verana v0.10.1+, devnet only)
 # =============================================================================
 #
 # This script sets up the Issuer Chatbot VS Agent locally (child service):
-#   1. Deploys the VS Agent via Docker + ngrok
-#   2. Sets up the veranad CLI account
-#   3. Obtains a Service credential from organization-vs
-#   4. Obtains an ISSUER permission for the organization-vs schema (VP flow)
+#   1. Creates issuer-chatbot-vs's own Corporation and grants it operator
+#      authorization for MsgStartParticipantOP
+#   2. Deploys the VS Agent via Docker + ngrok, bound to that Corporation,
+#      in AGENT_MODE=delegated against organization-vs
+#   3. Waits for EcsBootstrapService's delegated flow to obtain the Service
+#      credential from organization-vs automatically (no script action)
+#   4. Discovers organization-vs's "example" schema + root participant, and
+#      submits StartParticipantOP(ISSUER) — the DIDComm handshake then runs
+#      by itself
+#   5. Validates the pending request on organization-vs's admin API
+#   6. Optionally creates an AnonCreds credential definition
 #
-# Requires organization-vs to be running and its admin API reachable.
+# Requires organization-vs to be running and reachable (public URL + admin API).
 #
 # Prerequisites:
-#   - Docker, ngrok (authenticated), curl, jq
-#   - Organization VS running (ORG_VS_ADMIN_URL reachable)
+#   - Docker, ngrok (authenticated), curl, jq, veranad
+#   - MNEMONIC (or ISSUER_CHATBOT_VS_MNEMONIC) env var — a funded devnet account
 #
 # Usage:
 #   source issuer-chatbot-vs/config.env
-#   ./issuer-chatbot-vs/scripts/setup.sh
+#   MNEMONIC="..." ./issuer-chatbot-vs/scripts/setup.sh
 #
 # =============================================================================
 
@@ -34,7 +41,7 @@ source "${REPO_ROOT}/common/common.sh"
 # Configuration — override via environment or config.env
 # ---------------------------------------------------------------------------
 
-NETWORK="${NETWORK:-testnet}"
+NETWORK="${NETWORK:-devnet}"
 VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:latest}"
 VS_AGENT_CONTAINER_NAME="${VS_AGENT_CONTAINER_NAME:-issuer-chatbot-vs}"
 VS_AGENT_ADMIN_PORT="${VS_AGENT_ADMIN_PORT:-3002}"
@@ -42,27 +49,20 @@ VS_AGENT_PUBLIC_PORT="${VS_AGENT_PUBLIC_PORT:-3003}"
 VS_AGENT_DATA_DIR="${VS_AGENT_DATA_DIR:-${SERVICE_DIR}/data}"
 CHATBOT_PORT="${CHATBOT_PORT:-4000}"
 SERVICE_NAME="${SERVICE_NAME:-Example Issuer Chatbot}"
-USER_ACC="${USER_ACC:-org-vs-admin}"
+USER_ACC="${USER_ACC:-issuer-chatbot-vs-devnet-admin}"
 OUTPUT_FILE="${OUTPUT_FILE:-${SERVICE_DIR}/ids.env}"
+MNEMONIC="${MNEMONIC:-${ISSUER_CHATBOT_VS_MNEMONIC:-}}"
 
-# Organization VS
 ORG_VS_ADMIN_URL="${ORG_VS_ADMIN_URL:-http://localhost:3000}"
 ORG_VS_PUBLIC_URL="${ORG_VS_PUBLIC_URL:-}"
 
-# Service details
-SERVICE_TYPE="${SERVICE_TYPE:-IssuerService}"
+SERVICE_TYPE="${SERVICE_TYPE:-MESSAGING_APP}"
 SERVICE_DESCRIPTION="${SERVICE_DESCRIPTION:-Chatbot credential issuer for the Verana demo ecosystem}"
-SERVICE_LOGO_URL="${SERVICE_LOGO_URL:-https://verana.io/logo.svg}"
-SERVICE_MIN_AGE="${SERVICE_MIN_AGE:-0}"
-SERVICE_TERMS="${SERVICE_TERMS:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
-SERVICE_PRIVACY="${SERVICE_PRIVACY:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
 
-# AnonCreds
 ENABLE_ANONCREDS="${ENABLE_ANONCREDS:-false}"
 ANONCREDS_NAME="${ANONCREDS_NAME:-example}"
 ANONCREDS_VERSION="${ANONCREDS_VERSION:-1.0}"
 ANONCREDS_SUPPORT_REVOCATION="${ANONCREDS_SUPPORT_REVOCATION:-false}"
-CUSTOM_SCHEMA_BASE_ID="${CUSTOM_SCHEMA_BASE_ID:-example}"
 
 # ---------------------------------------------------------------------------
 # Ensure veranad is available
@@ -70,7 +70,7 @@ CUSTOM_SCHEMA_BASE_ID="${CUSTOM_SCHEMA_BASE_ID:-example}"
 
 if ! command -v veranad &> /dev/null; then
   log "veranad not found — downloading..."
-  VERANAD_VERSION="${VERANAD_VERSION:-v0.9.5}"
+  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.2-dev.2}"
   PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
   case "$ARCH" in
@@ -85,26 +85,66 @@ if ! command -v veranad &> /dev/null; then
   ok "veranad installed: $(veranad version)"
 fi
 
-# ---------------------------------------------------------------------------
-# Set network-specific variables
-# ---------------------------------------------------------------------------
-
 set_network_vars "$NETWORK"
 log "Network: $NETWORK (chain: $CHAIN_ID)"
 
 ADMIN_API="http://localhost:${VS_AGENT_ADMIN_PORT}"
 
+if ! curl -sf "${ORG_VS_ADMIN_URL}/api" > /dev/null 2>&1; then
+  err "Organization VS admin API not reachable at ${ORG_VS_ADMIN_URL}"
+  err "Make sure organization-vs is running and ORG_VS_ADMIN_URL is set correctly."
+  exit 1
+fi
+ok "Organization VS admin API reachable: $ORG_VS_ADMIN_URL"
+
+ORG_PUBLIC_API="${ORG_VS_PUBLIC_URL:-http://localhost:${ORG_VS_PUBLIC_PORT:-3001}}"
+ORG_DID=$(curl -sf "${ORG_PUBLIC_API}/.well-known/did.json" | jq -r '.id // empty')
+if [ -z "$ORG_DID" ]; then
+  err "Could not fetch organization-vs DID from $ORG_PUBLIC_API"
+  exit 1
+fi
+ok "organization-vs DID: $ORG_DID"
+
 # =============================================================================
-# STEP 1: Deploy VS Agent
+# STEP 1: Set up veranad CLI account (also the agent's own on-chain identity)
 # =============================================================================
 
-log "Step 1: Deploy VS Agent"
+log "Step 1: Set up veranad CLI account"
 
-# Clean up any previous instance
+if [ -n "$MNEMONIC" ]; then
+  echo "$MNEMONIC" | veranad keys add "$USER_ACC" --recover --keyring-backend test 2>/dev/null || true
+  ok "Mnemonic imported for account '$USER_ACC'"
+elif ! veranad keys show "$USER_ACC" --keyring-backend test > /dev/null 2>&1; then
+  err "No MNEMONIC provided and account '$USER_ACC' does not exist."
+  err "Export MNEMONIC (or ISSUER_CHATBOT_VS_MNEMONIC) with a funded devnet account and re-run."
+  exit 1
+fi
+setup_veranad_account "$USER_ACC" "$FAUCET_URL"
+
+# =============================================================================
+# STEP 2: Create Corporation (skipped if CORPORATION_ID already set)
+# =============================================================================
+
+log "Step 2: Corporation"
+
+if [ -n "${CORPORATION_ID:-}" ]; then
+  ok "Using existing CORPORATION_ID=$CORPORATION_ID"
+  resolve_corporation "$CORPORATION_ID"
+else
+  create_corporation "did:example:issuer-chatbot-vs-${CHAIN_ID}" "$EGF_DOC_URL" "" \
+    '["/verana.pp.v1.MsgStartParticipantOP","/verana.pp.v1.MsgRenewParticipantOP","/verana.pp.v1.MsgCancelParticipantOPLastRequest"]'
+  ok "Corporation created: CORPORATION_ID=$CORPORATION_ID — add this to issuer-chatbot-vs/config.env to skip next time"
+fi
+
+# =============================================================================
+# STEP 3: Deploy VS Agent, bound to the Corporation, delegated to organization-vs
+# =============================================================================
+
+log "Step 3: Deploy VS Agent"
+
 docker rm -f "$VS_AGENT_CONTAINER_NAME" 2>/dev/null || true
 rm -rf "${VS_AGENT_DATA_DIR}/data/wallet"
 
-# Pull image
 log "Pulling VS Agent image..."
 if ! docker pull --platform linux/amd64 "$VS_AGENT_IMAGE" 2>&1 | tail -1; then
   if docker image inspect "$VS_AGENT_IMAGE" > /dev/null 2>&1; then
@@ -115,7 +155,6 @@ if ! docker pull --platform linux/amd64 "$VS_AGENT_IMAGE" 2>&1 | tail -1; then
   fi
 fi
 
-# Start ngrok tunnel
 log "Starting ngrok tunnel on port ${VS_AGENT_PUBLIC_PORT}..."
 pkill -f "ngrok http ${VS_AGENT_PUBLIC_PORT}" 2>/dev/null || true
 sleep 1
@@ -129,9 +168,8 @@ if [ -z "$NGROK_URL" ]; then
   exit 1
 fi
 NGROK_DOMAIN=$(echo "$NGROK_URL" | sed 's|https://||')
-ok "ngrok tunnel: $NGROK_URL (domain: $NGROK_DOMAIN)"
+ok "ngrok tunnel: $NGROK_URL"
 
-# Start VS Agent container
 log "Starting VS Agent container..."
 mkdir -p "$VS_AGENT_DATA_DIR"
 docker run --platform linux/amd64 -d \
@@ -142,12 +180,20 @@ docker run --platform linux/amd64 -d \
   -e "AGENT_LABEL=${SERVICE_NAME}" \
   -e "ENABLE_PUBLIC_API_SWAGGER=true" \
   -e "EVENTS_BASE_URL=http://host.docker.internal:${CHATBOT_PORT}" \
+  -e "VERANA_RPC_ENDPOINT_URL=${NODE_RPC}" \
+  -e "VERANA_INDEXER_BASE_URL=${INDEXER_URL}" \
+  -e "VERANA_CHAIN_ID=${CHAIN_ID}" \
+  -e "VERANA_ACCOUNT_MNEMONIC=${MNEMONIC}" \
+  -e "VERANA_CORPORATION_ID=${CORPORATION_ID}" \
+  -e "AGENT_MODE=delegated" \
+  -e "AGENT_DELEGATED_PARENT_VS_DID=${ORG_DID}" \
+  -e "SELF_ISSUED_VTC_SERVICE_TYPE=${SERVICE_TYPE}" \
+  -e "SELF_ISSUED_VTC_SERVICE_DESCRIPTION=${SERVICE_DESCRIPTION}" \
   --name "$VS_AGENT_CONTAINER_NAME" \
   "$VS_AGENT_IMAGE"
 
 ok "VS Agent container started: $VS_AGENT_CONTAINER_NAME"
 
-# Wait for agent
 log "Waiting for VS Agent to initialize (up to 180s)..."
 if wait_for_agent "$ADMIN_API" 90; then
   ok "VS Agent is ready"
@@ -157,7 +203,6 @@ else
   exit 1
 fi
 
-# Get agent DID
 AGENT_DID=$(curl -sf "${ADMIN_API}/v1/agent" | jq -r '.publicDid')
 if [ -z "$AGENT_DID" ] || [ "$AGENT_DID" = "null" ]; then
   err "Could not retrieve agent DID"
@@ -165,174 +210,48 @@ if [ -z "$AGENT_DID" ] || [ "$AGENT_DID" = "null" ]; then
 fi
 ok "Agent DID: $AGENT_DID"
 
-# =============================================================================
-# STEP 2: Set up veranad CLI account
-# =============================================================================
-
-log "Step 2: Set up veranad CLI account"
-setup_veranad_account "$USER_ACC" "$FAUCET_URL"
+log "Waiting for the delegated Service credential to be obtained (up to 30s)..."
+sleep 20
+ok "Check: ${NGROK_URL}/.well-known/did.json"
 
 # =============================================================================
-# STEP 3: Obtain Service credential from organization-vs
+# STEP 4: Discover organization-vs's "example" schema and submit StartParticipantOP
 # =============================================================================
 
-log "Step 3: Obtain Service credential from organization-vs"
+log "Step 4: Obtain ISSUER participant for organization-vs's 'example' schema"
 
-# Verify organization-vs admin API is reachable (use /api which is always exposed)
-if ! curl -sf "${ORG_VS_ADMIN_URL}/api" > /dev/null 2>&1; then
-  err "Organization VS admin API not reachable at ${ORG_VS_ADMIN_URL}"
-  err "Make sure organization-vs is running and ORG_VS_ADMIN_URL is set correctly."
+CUSTOM_SCHEMA_ID=$(discover_custom_schema_id "${ORG_PUBLIC_API}/.well-known/did.json") || {
+  err "Could not discover the 'example' schema from organization-vs's DID document"
   exit 1
-fi
-ok "Organization VS admin API reachable: $ORG_VS_ADMIN_URL"
-
-# Skip if Service credential is already linked on the local agent
-if has_linked_vp "$NGROK_URL" "service"; then
-  ok "Service credential already linked — skipping"
-else
-  # Discover Service VTJSC from ECS TR
-  SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
-  SERVICE_JSC_URL=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '1p')
-  CS_SERVICE_ID=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '2p')
-
-  # Download logo
-  SERVICE_LOGO_DATA_URI=$(download_logo_data_uri "$SERVICE_LOGO_URL")
-
-  # Build Service credential claims
-  SERVICE_CLAIMS=$(jq -n \
-    --arg id "$AGENT_DID" \
-    --arg name "$SERVICE_NAME" \
-    --arg type "$SERVICE_TYPE" \
-    --arg desc "$SERVICE_DESCRIPTION" \
-    --arg logo "$SERVICE_LOGO_DATA_URI" \
-    --argjson age "$SERVICE_MIN_AGE" \
-    --arg terms "$SERVICE_TERMS" \
-    --arg privacy "$SERVICE_PRIVACY" \
-    '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
-
-  # Issue Service credential from organization-vs, link on local agent
-  issue_remote_and_link "$ORG_VS_ADMIN_URL" "$ADMIN_API" "service" "$SERVICE_JSC_URL" "$AGENT_DID" "$SERVICE_CLAIMS"
-fi
-
-# =============================================================================
-# STEP 4: Obtain ISSUER permission for organization-vs schema (VP flow)
-# =============================================================================
-
-log "Step 4: Obtain ISSUER permission for organization-vs schema"
-
-# Discover the custom schema from organization-vs DID document
-# The organization-vs public endpoint serves its DID document
-if [ -z "$ORG_VS_PUBLIC_URL" ]; then
-  # Derive from org agent's DID
-  ORG_AGENT_DID=$(curl -sf "${ORG_VS_ADMIN_URL}/v1/agent" | jq -r '.publicDid')
-  ok "Organization VS DID: $ORG_AGENT_DID"
-else
-  ORG_AGENT_DID=""
-fi
-
-# Find VTJSC entries in the org's DID document that are NOT organization/service
-# (those are the custom schema VTJSCs)
-log "Looking for custom schema VTJSC in organization-vs..."
-ORG_PUBLIC_API="${ORG_VS_PUBLIC_URL:-}"
-if [ -z "$ORG_PUBLIC_API" ]; then
-  # If organization-vs is local, try its public port
-  ORG_PUBLIC_PORT="${ORG_VS_PUBLIC_PORT:-3001}"
-  ORG_PUBLIC_API="http://localhost:${ORG_PUBLIC_PORT}"
-fi
-
-ORG_DID_DOC=$(curl -sf "${ORG_PUBLIC_API}/.well-known/did.json" 2>/dev/null || echo "{}")
-if [ "$ORG_DID_DOC" = "{}" ]; then
-  err "Could not fetch organization-vs DID document from $ORG_PUBLIC_API"
-  err "Set ORG_VS_PUBLIC_URL to the organization-vs public endpoint."
-  exit 1
-fi
-
-# Find the custom schema VTJSC (not organization-jsc-vp, not service-jsc-vp)
-CUSTOM_VP_URL=$(echo "$ORG_DID_DOC" | jq -r '
-  .service[] |
-  select(.type == "LinkedVerifiablePresentation") |
-  select(.id | test("organization-jsc-vp|service-jsc-vp") | not) |
-  select(.id | test("jsc-vp")) |
-  .serviceEndpoint' | head -1)
-
-if [ -z "$CUSTOM_VP_URL" ]; then
-  err "No custom schema VTJSC found in organization-vs DID document"
-  exit 1
-fi
-ok "Custom schema VTJSC VP: $CUSTOM_VP_URL"
-
-# Fetch VP and extract schema ref
-CUSTOM_VP=$(curl -sf "$CUSTOM_VP_URL")
-CUSTOM_SCHEMA_REF=$(echo "$CUSTOM_VP" | jq -r '.verifiableCredential[0].credentialSubject.jsonSchema."$ref" // empty')
-CUSTOM_SCHEMA_ID=$(echo "$CUSTOM_SCHEMA_REF" | grep -oE '[0-9]+$')
-
-if [ -z "$CUSTOM_SCHEMA_ID" ]; then
-  err "Could not extract schema ID from organization-vs VTJSC"
-  exit 1
-fi
+}
 ok "Organization-vs custom schema ID: $CUSTOM_SCHEMA_ID"
 
-# Check if ISSUER permission already exists
-if EXISTING_PERM=$(find_active_issuer_perm "$CUSTOM_SCHEMA_ID" "$AGENT_DID"); then
-  ok "Active ISSUER permission already exists: $EXISTING_PERM — skipping"
+if EXISTING_PARTICIPANT_ID=$(find_active_participant "$CUSTOM_SCHEMA_ID" "$PP_IDX_ROLE_ISSUER" "$AGENT_DID"); then
+  ok "Active ISSUER participant already exists: $EXISTING_PARTICIPANT_ID — skipping"
 else
-  log "Obtaining ISSUER permission via VP flow..."
-
-  # Discover root permission
-  ROOT_PERM_ID=$(discover_active_root_perm "$CUSTOM_SCHEMA_ID")
-
-  check_balance "$USER_ACC"
-
-  # Start VP flow
-  START_RESULT=$(veranad tx perm start-perm-vp \
-    issuer "$ROOT_PERM_ID" \
-    --did "$AGENT_DID" \
-    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-    --fees "$FEES" --gas auto --node "$NODE_RPC" \
-    --output json -y 2>&1 | extract_tx_json)
-  START_TX_HASH=$(echo "$START_RESULT" | jq -r '.txhash // empty')
-  if [ -z "$START_TX_HASH" ]; then
-    err "Failed to start ISSUER VP. Output: $START_RESULT"
+  ROOT_PARTICIPANT_ID=$(find_root_participant "$CUSTOM_SCHEMA_ID") || {
+    err "Could not find the root participant for schema $CUSTOM_SCHEMA_ID"
     exit 1
-  fi
-  ok "VP start TX: $START_TX_HASH"
-  sleep 8
+  }
+  start_participant_op "$CORPORATION" "$PP_ROLE_ISSUER" "$ROOT_PARTICIPANT_ID" "$AGENT_DID" > /dev/null
 
-  ISSUER_PERM_ID=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id" || true)
-  if [ -z "$ISSUER_PERM_ID" ]; then
-    sleep 6
-    ISSUER_PERM_ID=$(extract_tx_event "$START_TX_HASH" "start_permission_vp" "permission_id" || true)
-  fi
-  if [ -z "$ISSUER_PERM_ID" ]; then
-    err "Could not extract permission ID from start-perm-vp"
-    exit 1
-  fi
+  # =============================================================================
+  # STEP 5: Validate the pending request on organization-vs
+  # =============================================================================
 
-  # Validate (ecosystem authority — in demo, same account controls org)
-  check_balance "$USER_ACC"
-  VALIDATE_RESULT=$(veranad tx perm set-perm-vp-validated \
-    "$ISSUER_PERM_ID" \
-    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-    --fees "$FEES" --gas auto --node "$NODE_RPC" \
-    --output json -y 2>&1 | extract_tx_json)
-  VALIDATE_TX_HASH=$(echo "$VALIDATE_RESULT" | jq -r '.txhash // empty')
-  if [ -z "$VALIDATE_TX_HASH" ]; then
-    err "Failed to validate ISSUER perm. Output: $VALIDATE_RESULT"
-    exit 1
-  fi
-  sleep 6
-  ok "ISSUER permission validated: $ISSUER_PERM_ID"
+  log "Step 5: Validate onboarding request on organization-vs"
+  sleep 15
+  validate_pending_flow "$ORG_VS_ADMIN_URL" "$AGENT_DID"
 fi
 
 # =============================================================================
-# STEP 5: AnonCreds credential definition (optional)
+# STEP 6: AnonCreds credential definition (optional)
 # =============================================================================
 
 ANONCREDS_CRED_DEF_ID=""
 if [ "$ENABLE_ANONCREDS" = "true" ]; then
-  log "Step 5: AnonCreds credential definition"
+  log "Step 6: AnonCreds credential definition"
 
-  # Check if already exists on this issuer agent
   PUBLIC_URL="http://localhost:${VS_AGENT_PUBLIC_PORT}"
   EXISTING_ANONCREDS=$(curl -sf "${PUBLIC_URL}/resources?resourceType=anonCredsCredDef" \
     | jq -r '. | length' 2>/dev/null || echo "0")
@@ -341,12 +260,12 @@ if [ "$ENABLE_ANONCREDS" = "true" ]; then
       | jq -r '.[0].id // empty' 2>/dev/null || echo "")
     ok "AnonCreds credential definition already exists: ${ANONCREDS_CRED_DEF_ID} — skipping"
   else
-    # Find the VTJSC (json schema credential) for the custom schema
-    VTJSC_VPR_REF="vpr:verana:${CHAIN_ID}/cs/v1/js/${CUSTOM_SCHEMA_ID}"
+    # v4 VTJSC schema ref format: vpr:verana:<chain-id>:cs:<schema-id>
+    VTJSC_VPR_REF="vpr:verana:${CHAIN_ID}:cs:${CUSTOM_SCHEMA_ID}"
     VTJSC_CRED_ID=$(curl -sf "${ADMIN_API}/v1/vt/json-schema-credentials" \
       | jq -r --arg sid "$VTJSC_VPR_REF" '.data[] | select(.schemaId == $sid) | .credential.id')
     if [ -z "$VTJSC_CRED_ID" ]; then
-      err "Could not find VTJSC for schema $CUSTOM_SCHEMA_ID"
+      err "Could not find VTJSC for schema $CUSTOM_SCHEMA_ID (ref: $VTJSC_VPR_REF)"
       exit 1
     fi
 
@@ -361,7 +280,7 @@ if [ "$ENABLE_ANONCREDS" = "true" ]; then
     ok "AnonCreds credential definition created: $ANONCREDS_CRED_DEF_ID"
   fi
 else
-  log "Step 5: AnonCreds — skipped (ENABLE_ANONCREDS=false)"
+  log "Step 6: AnonCreds — skipped (ENABLE_ANONCREDS=false)"
 fi
 
 # =============================================================================
@@ -381,22 +300,20 @@ VS_AGENT_CONTAINER_NAME=${VS_AGENT_CONTAINER_NAME}
 VS_AGENT_ADMIN_PORT=${VS_AGENT_ADMIN_PORT}
 VS_AGENT_PUBLIC_PORT=${VS_AGENT_PUBLIC_PORT}
 USER_ACC=${USER_ACC}
+CORPORATION_ID=${CORPORATION_ID}
 CUSTOM_SCHEMA_ID=${CUSTOM_SCHEMA_ID:-}
 ANONCREDS_CRED_DEF_ID=${ANONCREDS_CRED_DEF_ID:-}
 EOF
 
 ok "IDs saved to ${OUTPUT_FILE}"
 
-# =============================================================================
-# Summary
-# =============================================================================
-
 log "Issuer Chatbot VS setup complete!"
 echo ""
-echo "  Agent DID         : $AGENT_DID"
-echo "  Public URL        : $NGROK_URL"
-echo "  Admin API         : $ADMIN_API"
-echo "  Schema ID         : ${CUSTOM_SCHEMA_ID:-n/a}"
+echo "  Agent DID    : $AGENT_DID"
+echo "  Public URL   : $NGROK_URL"
+echo "  Admin API    : $ADMIN_API"
+echo "  Corporation ID: $CORPORATION_ID"
+echo "  Schema ID    : ${CUSTOM_SCHEMA_ID:-n/a}"
 if [ -n "${ANONCREDS_CRED_DEF_ID:-}" ]; then
 echo "  AnonCreds Cred Def: $ANONCREDS_CRED_DEF_ID"
 fi

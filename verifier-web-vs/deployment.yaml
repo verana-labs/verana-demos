@@ -1,9 +1,10 @@
-# Verifier Web VS Agent deployment — Helm chart values
+# Verifier Web VS Agent deployment — Helm chart values (Verana v0.10.1+)
 #
-# Network and service name are derived from the branch name.
-# The workflow substitutes __NETWORK__, __VS_NAME__ and __CHILD_VS_NAME__ placeholders at deploy time.
+# Network and service name are derived from the branch name. The workflow
+# substitutes __NETWORK__, __VS_NAME__, __CHILD_VS_NAME__, __CORPORATION_ID__
+# and __ORG_VS_DID__ placeholders at deploy time.
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v1.11.0
+chartVersion: v2.0.0-dev.6
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
@@ -14,7 +15,9 @@ replicas: 1
 adminPort: 3000
 didcommPort: 3001
 eventsBaseUrl: "https://verifier-web-vs.__VS_NAME__.demos.__NETWORK__.verana.network"
+didcommInvitationImageUrl: "https://verana.io/logo.svg"
 publicDidMethod: "webvh"
+enablePublicApiSwagger: true
 
 resources:
   requests:
@@ -36,12 +39,35 @@ ingress:
     host: ""
 
 extraEnv:
-  - name: ENABLE_PUBLIC_API_SWAGGER
-    value: "true"
   - name: AGENT_LOG_LEVEL
     value: "3"
   - name: USE_CORS
     value: "true"
+  - name: VERANA_RPC_ENDPOINT_URL
+    value: "https://rpc.__NETWORK__.verana.network"
+  - name: VERANA_INDEXER_BASE_URL
+    value: "https://idx.__NETWORK__.verana.network"
+  - name: VERANA_CHAIN_ID
+    value: "vna-__NETWORK__-1"
+  - name: VERANA_ACCOUNT_MNEMONIC
+    valueFrom:
+      secretKeyRef:
+        name: verifier-web-vs-secrets
+        key: VERIFIER_WEB_VS_MNEMONIC
+  # Set by scripts/setup.sh's "bootstrap-corporation" step.
+  - name: VERANA_CORPORATION_ID
+    value: "__CORPORATION_ID__"
+  - name: AGENT_MODE
+    value: "delegated"
+  # organization-vs's own DID — this agent requests its Service credential
+  # from it directly over DIDComm (EcsBootstrapService.runDelegated()).
+  - name: AGENT_DELEGATED_PARENT_VS_DID
+    value: "__ORG_VS_DID__"
+  # Service credential claims (self-issued by EcsBootstrapService)
+  - name: SELF_ISSUED_VTC_SERVICE_TYPE
+    value: "WEB_PORTAL"
+  - name: SELF_ISSUED_VTC_SERVICE_DESCRIPTION
+    value: "Web-based credential verifier for the Verana demo ecosystem"
 
 storage:
   size: 1Gi

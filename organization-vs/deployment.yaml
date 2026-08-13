@@ -1,10 +1,12 @@
-# Organization VS Agent deployment — Helm chart values
+# Organization VS Agent deployment — Helm chart values (Verana v0.10.1+)
 #
 # Network (testnet/devnet) and service name are derived from the branch name.
-# The workflow substitutes __NETWORK__ and __VS_NAME__ placeholders at deploy time.
-# Example: vs/testnet-example → __NETWORK__=testnet, __VS_NAME__=example
+# The workflow substitutes __NETWORK__, __VS_NAME__ and __CORPORATION_ID__
+# placeholders at deploy time (CORPORATION_ID comes from config.env, set
+# after running the "bootstrap-corporation" workflow step once).
+# Example: vs/devnet-example → __NETWORK__=devnet, __VS_NAME__=example
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v1.11.0
+chartVersion: v2.0.0-dev.6
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
@@ -15,7 +17,9 @@ replicas: 1
 adminPort: 3000
 didcommPort: 3001
 eventsBaseUrl: "https://organization-vs.__VS_NAME__.demos.__NETWORK__.verana.network"
+didcommInvitationImageUrl: "https://verana.io/logo.svg"
 publicDidMethod: "webvh"
+enablePublicApiSwagger: true
 
 resources:
   requests:
@@ -37,12 +41,47 @@ ingress:
     host: ""
 
 extraEnv:
-  - name: ENABLE_PUBLIC_API_SWAGGER
-    value: "true"
   - name: AGENT_LOG_LEVEL
     value: "3"
   - name: USE_CORS
     value: "true"
+  - name: VERANA_RPC_ENDPOINT_URL
+    value: "https://rpc.__NETWORK__.verana.network"
+  - name: VERANA_INDEXER_BASE_URL
+    value: "https://idx.__NETWORK__.verana.network"
+  - name: VERANA_CHAIN_ID
+    value: "vna-__NETWORK__-1"
+  - name: VERANA_ACCOUNT_MNEMONIC
+    valueFrom:
+      secretKeyRef:
+        name: organization-vs-secrets
+        key: ORGANIZATION_VS_MNEMONIC
+  # Set by scripts/setup.sh's "bootstrap-corporation" step (corporation_id
+  # printed after granting operator authorization to this agent's own account).
+  - name: VERANA_CORPORATION_ID
+    value: "__CORPORATION_ID__"
+  - name: AGENT_MODE
+    value: "standalone"
+  # The shared ECS Ecosystem this service joins to obtain its own ECS
+  # credentials — see verana-deploy/scripts/ecs-ecosystem (devnet only).
+  - name: TRUSTED_ECS_ECOSYSTEM_DIDS
+    value: "did:webvh:QmZyuWxj9pnAzgvzZT4h2fZWknXVab9J5EEk911S6sMcXp:ecs-ecosystem.devnet.verana.network"
+  # Organization credential claims (self-issued by EcsBootstrapService)
+  - name: SELF_ISSUED_VTC_ORG_ORGANIZATIONKIND
+    value: "PUBLIC"
+  - name: SELF_ISSUED_VTC_ORG_COUNTRYCODE
+    value: "CH"
+  - name: SELF_ISSUED_VTC_ORG_REGISTRYID
+    value: "CH-CHE-123.456.789"
+  - name: SELF_ISSUED_VTC_ORG_REGISTRYURI
+    value: "https://www.zefix.ch"
+  - name: SELF_ISSUED_VTC_ORG_ADDRESS
+    value: "Bahnhofstrasse 42, 8001 Zurich, Switzerland"
+  # Service credential claims (self-issued by EcsBootstrapService)
+  - name: SELF_ISSUED_VTC_SERVICE_TYPE
+    value: "WEB_PORTAL"
+  - name: SELF_ISSUED_VTC_SERVICE_DESCRIPTION
+    value: "Organization service for the Verana demo ecosystem"
 
 storage:
   size: 1Gi

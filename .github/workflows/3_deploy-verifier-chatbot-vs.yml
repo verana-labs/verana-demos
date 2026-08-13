@@ -8,11 +8,20 @@ on:
         required: true
         type: choice
         options:
+          - bootstrap-corporation
           - deploy
-          - get-credentials
+          - onboard-verifier
           - deploy-chatbot
           - all
         default: all
+      corporation-id:
+        description: >-
+          verifier-chatbot-vs's Corporation ID. Leave empty on the first run
+          of "bootstrap-corporation" — it prints the new ID, which you must
+          then set here (and in verifier-chatbot-vs/config.env) for every
+          later run.
+        required: false
+        type: string
 
 jobs:
   deploy-verifier-chatbot-vs:
@@ -29,7 +38,7 @@ jobs:
             echo "::error::Branch vs/testnet-main is reserved. Deploy from 'main' branch instead."
             exit 1
           elif [ "$BRANCH" = "main" ]; then
-            NETWORK="testnet"
+            NETWORK="devnet"
             VS_NAME="main"
           elif [[ "$BRANCH" =~ ^vs/(testnet|devnet)- ]]; then
             SUFFIX="${BRANCH#vs/}"
@@ -52,28 +61,9 @@ jobs:
             key="${line%%=*}"
             echo "${key}=${!key}" >> "$GITHUB_ENV"
           done < <(grep -E '^[A-Z_]+=' verifier-chatbot-vs/config.env)
-
-      - name: Resolve deployment.yaml placeholders
-        run: |
-          CHILD_VS_NAME="verifier-chatbot-${VS_NAME}"
-          sed -e "s/__NETWORK__/${NETWORK}/g" -e "s/__CHILD_VS_NAME__/${CHILD_VS_NAME}/g" -e "s/__VS_NAME__/${VS_NAME}/g" \
-            verifier-chatbot-vs/deployment.yaml > /tmp/deployment-resolved.yaml
-          echo "CHILD_VS_NAME=${CHILD_VS_NAME}" >> "$GITHUB_ENV"
-          echo "--- Resolved deployment.yaml ---"
-          cat /tmp/deployment-resolved.yaml
-
-      - name: Parse deployment.yaml
-        run: |
-          CHART_SOURCE=$(yq '.chartSource' /tmp/deployment-resolved.yaml)
-          CHART_VERSION=$(yq '.chartVersion' /tmp/deployment-resolved.yaml)
-          CHART_NAMESPACE="${{ secrets.K8S_NAMESPACE }}"
-          RELEASE_NAME=$(yq '.name' /tmp/deployment-resolved.yaml)
-          INGRESS_HOST=$(yq '.ingress.host' /tmp/deployment-resolved.yaml)
-          echo "CHART_SOURCE=${CHART_SOURCE}" >> "$GITHUB_ENV"
-          echo "CHART_VERSION=${CHART_VERSION}" >> "$GITHUB_ENV"
-          echo "CHART_NAMESPACE=${CHART_NAMESPACE}" >> "$GITHUB_ENV"
-          echo "RELEASE_NAME=${RELEASE_NAME}" >> "$GITHUB_ENV"
-          echo "INGRESS_HOST=${INGRESS_HOST}" >> "$GITHUB_ENV"
+          if [ -n "${{ inputs.corporation-id }}" ]; then
+            echo "CORPORATION_ID=${{ inputs.corporation-id }}" >> "$GITHUB_ENV"
+          fi
 
       - name: Set up kubeconfig
         run: |
@@ -89,7 +79,7 @@ jobs:
 
       - name: Install veranad
         run: |
-          VERANAD_VERSION="v0.9.5"
+          VERANAD_VERSION="v0.10.2-dev.2"
           curl -sfL "https://github.com/verana-labs/verana-node/releases/download/${VERANAD_VERSION}/veranad-linux-amd64" \
             -o /usr/local/bin/veranad
           chmod +x /usr/local/bin/veranad
@@ -97,17 +87,84 @@ jobs:
 
       - name: Import account from mnemonic
         run: |
-          echo "${{ secrets.VS_DEMO_MNEMONIC }}" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
+          echo "${{ secrets.VERIFIER_CHATBOT_VS_MNEMONIC }}" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
+
+      # -----------------------------------------------------------------------
+      # BOOTSTRAP-CORPORATION: create verifier-chatbot-vs's own Corporation
+      # -----------------------------------------------------------------------
+      - name: "Bootstrap Corporation"
+        if: inputs.step == 'bootstrap-corporation' || inputs.step == 'all'
+        run: |
+          source common/common.sh
+          set_network_vars "$NETWORK"
+
+          if [ -n "${CORPORATION_ID:-}" ]; then
+            ok "CORPORATION_ID=$CORPORATION_ID already set — resolving to confirm it exists"
+            resolve_corporation "$CORPORATION_ID"
+          else
+            create_corporation "did:example:verifier-chatbot-vs-${CHAIN_ID}" "$EGF_DOC_URL" "" \
+              '["/verana.pp.v1.MsgSelfCreateParticipant"]'
+            echo "::notice::Corporation created: CORPORATION_ID=$CORPORATION_ID"
+            echo "::notice::Set 'corporation-id: $CORPORATION_ID' as the workflow input (and CORPORATION_ID in verifier-chatbot-vs/config.env) before running 'deploy'."
+          fi
 
       # -----------------------------------------------------------------------
       # DEPLOY: Install/upgrade VS Agent via Helm
       # -----------------------------------------------------------------------
+      - name: Resolve organization-vs DID
+        if: inputs.step == 'deploy' || inputs.step == 'all'
+        run: |
+          ORG_PUBLIC_URL="https://organization-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
+          ORG_DID=$(curl -sf "${ORG_PUBLIC_URL}/.well-known/did.json" | jq -r '.id // empty')
+          if [ -z "$ORG_DID" ]; then
+            echo "::error::Could not fetch organization-vs DID from ${ORG_PUBLIC_URL}. Is organization-vs deployed?"
+            exit 1
+          fi
+          echo "ORG_VS_DID=${ORG_DID}" >> "$GITHUB_ENV"
+          echo "organization-vs DID: $ORG_DID"
+
+      - name: Resolve deployment.yaml placeholders
+        if: inputs.step == 'deploy' || inputs.step == 'all'
+        run: |
+          if [ -z "${CORPORATION_ID:-}" ]; then
+            echo "::error::CORPORATION_ID is not set. Run 'bootstrap-corporation' first."
+            exit 1
+          fi
+          CHILD_VS_NAME="verifier-chatbot-${VS_NAME}"
+          sed -e "s/__NETWORK__/${NETWORK}/g" -e "s/__CHILD_VS_NAME__/${CHILD_VS_NAME}/g" -e "s/__VS_NAME__/${VS_NAME}/g" \
+            -e "s/__CORPORATION_ID__/${CORPORATION_ID}/g" -e "s#__ORG_VS_DID__#${ORG_VS_DID}#g" \
+            verifier-chatbot-vs/deployment.yaml > /tmp/deployment-resolved.yaml
+          echo "CHILD_VS_NAME=${CHILD_VS_NAME}" >> "$GITHUB_ENV"
+          echo "--- Resolved deployment.yaml ---"
+          cat /tmp/deployment-resolved.yaml
+
+      - name: Parse deployment.yaml
+        if: inputs.step == 'deploy' || inputs.step == 'all'
+        run: |
+          CHART_SOURCE=$(yq '.chartSource' /tmp/deployment-resolved.yaml)
+          CHART_VERSION=$(yq '.chartVersion' /tmp/deployment-resolved.yaml)
+          CHART_NAMESPACE="${{ secrets.K8S_NAMESPACE }}"
+          RELEASE_NAME=$(yq '.name' /tmp/deployment-resolved.yaml)
+          INGRESS_HOST=$(yq '.ingress.host' /tmp/deployment-resolved.yaml)
+          echo "CHART_SOURCE=${CHART_SOURCE}" >> "$GITHUB_ENV"
+          echo "CHART_VERSION=${CHART_VERSION}" >> "$GITHUB_ENV"
+          echo "CHART_NAMESPACE=${CHART_NAMESPACE}" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=${RELEASE_NAME}" >> "$GITHUB_ENV"
+          echo "INGRESS_HOST=${INGRESS_HOST}" >> "$GITHUB_ENV"
+
+      - name: Ensure agent secret exists
+        if: inputs.step == 'deploy' || inputs.step == 'all'
+        run: |
+          kubectl create namespace "$CHART_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$CHART_NAMESPACE" get secret verifier-chatbot-vs-secrets > /dev/null 2>&1 || \
+          kubectl -n "$CHART_NAMESPACE" create secret generic verifier-chatbot-vs-secrets \
+            --from-literal=VERIFIER_CHATBOT_VS_MNEMONIC="${{ secrets.VERIFIER_CHATBOT_VS_MNEMONIC }}"
+
       - name: Deploy VS Agent via Helm
         if: inputs.step == 'deploy' || inputs.step == 'all'
         run: |
           yq 'del(.chartSource, .chartVersion)' /tmp/deployment-resolved.yaml > /tmp/helm-values.yaml
           yq -i '.didcommLabel = env(SERVICE_NAME)' /tmp/helm-values.yaml
-          yq -i '.didcommInvitationImageUrl = env(SERVICE_LOGO_URL)' /tmp/helm-values.yaml
           helm upgrade --install "$RELEASE_NAME" "$CHART_SOURCE" \
             --version "$CHART_VERSION" \
             --namespace "$CHART_NAMESPACE" --create-namespace \
@@ -115,12 +172,13 @@ jobs:
             --wait --timeout 300s
 
       # -----------------------------------------------------------------------
-      # GET-CREDENTIALS: Obtain Service credential + VERIFIER permission
+      # ONBOARD-VERIFIER: self-create VERIFIER participant (OPEN mode)
       # -----------------------------------------------------------------------
       - name: Port-forward child VS Agent
-        if: inputs.step == 'get-credentials' || inputs.step == 'all'
+        if: inputs.step == 'onboard-verifier' || inputs.step == 'all'
         run: |
-          kubectl port-forward -n "$CHART_NAMESPACE" "svc/$RELEASE_NAME" 3002:3000 &
+          RELEASE_NAME="${RELEASE_NAME:-verifier-chatbot-${VS_NAME}}"
+          kubectl port-forward -n "${{ secrets.K8S_NAMESPACE }}" "svc/$RELEASE_NAME" 3002:3000 &
           echo "CHILD_PF_PID=$!" >> "$GITHUB_ENV"
           sleep 5
           curl -sf http://localhost:3002/v1/agent > /dev/null || {
@@ -128,83 +186,38 @@ jobs:
             exit 1
           }
 
-      - name: Port-forward organization VS Agent
-        if: inputs.step == 'get-credentials' || inputs.step == 'all'
+      - name: Self-create VERIFIER on organization-vs's example schema
+        if: inputs.step == 'onboard-verifier' || inputs.step == 'all'
         run: |
-          kubectl port-forward -n "$CHART_NAMESPACE" "svc/${VS_NAME}" 3000:3000 &
-          echo "ORG_PF_PID=$!" >> "$GITHUB_ENV"
-          sleep 5
-          curl -sf http://localhost:3000/v1/agent > /dev/null || {
-            echo "::error::Port-forward to organization VS-Agent failed"
+          if [ -z "${CORPORATION_ID:-}" ]; then
+            echo "::error::CORPORATION_ID is not set. Run 'bootstrap-corporation' first."
             exit 1
-          }
-
-      - name: Get Service credential and VERIFIER permission
-        if: inputs.step == 'get-credentials' || inputs.step == 'all'
-        run: |
-          ORG_ADMIN_API="http://localhost:3000"
-          CHILD_ADMIN_API="http://localhost:3002"
+          fi
           source common/common.sh
           set_network_vars "$NETWORK"
+          resolve_corporation "$CORPORATION_ID"
 
-          CHILD_DID=$(curl -sf "${CHILD_ADMIN_API}/v1/agent" | jq -r '.publicDid')
-          echo "Child DID: $CHILD_DID"
+          CHILD_DID=$(curl -sf "http://localhost:3002/v1/agent" | jq -r '.publicDid')
+          ok "Child DID: $CHILD_DID"
 
-          # Get Service credential from organization-vs (skip if already linked)
-          CHILD_PUBLIC_URL="https://${INGRESS_HOST}"
-          if has_linked_vp "$CHILD_PUBLIC_URL" "service"; then
-            ok "Service credential already linked — skipping"
-          else
-            SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
-            SERVICE_JSC_URL=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '1p')
-
-            SERVICE_LOGO_DATA_URI=$(download_logo_data_uri "$SERVICE_LOGO_URL")
-
-            SERVICE_CLAIMS=$(jq -n \
-              --arg id "$CHILD_DID" \
-              --arg name "$SERVICE_NAME" \
-              --arg type "${SERVICE_TYPE:-VerifierService}" \
-              --arg desc "$SERVICE_DESCRIPTION" \
-              --arg logo "$SERVICE_LOGO_DATA_URI" \
-              --argjson age "${SERVICE_MIN_AGE:-0}" \
-              --arg terms "${SERVICE_TERMS:-}" \
-              --arg privacy "${SERVICE_PRIVACY:-}" \
-              '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
-
-            issue_remote_and_link "$ORG_ADMIN_API" "$CHILD_ADMIN_API" "service" "$SERVICE_JSC_URL" "$CHILD_DID" "$SERVICE_CLAIMS"
-          fi
-
-          # Discover custom schema from organization-vs DID doc
           ORG_PUBLIC_URL="https://organization-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
-          ORG_DID_DOC=$(curl -sf "${ORG_PUBLIC_URL}/.well-known/did.json")
-
-          CUSTOM_VP_URL=$(echo "$ORG_DID_DOC" | jq -r '
-            .service[] |
-            select(.type == "LinkedVerifiablePresentation") |
-            select(.id | test("organization-jsc-vp|service-jsc-vp") | not) |
-            select(.id | test("jsc-vp")) |
-            .serviceEndpoint' | head -1)
-
-          if [ -z "$CUSTOM_VP_URL" ]; then
-            echo "::error::No custom schema VP found in organization-vs DID doc. Has the trust registry been created?"
+          CUSTOM_SCHEMA_ID=$(discover_custom_schema_id "${ORG_PUBLIC_URL}/.well-known/did.json")
+          if [ -z "$CUSTOM_SCHEMA_ID" ]; then
+            echo "::error::Could not discover the 'example' schema from organization-vs's DID document"
             exit 1
           fi
-          CUSTOM_VP=$(curl -sf "$CUSTOM_VP_URL")
-          CUSTOM_SCHEMA_REF=$(echo "$CUSTOM_VP" | jq -r '.verifiableCredential[0].credentialSubject.jsonSchema."$ref" // empty')
-          CUSTOM_SCHEMA_ID=$(echo "$CUSTOM_SCHEMA_REF" | grep -oE '[0-9]+$')
           ok "Organization-vs custom schema ID: $CUSTOM_SCHEMA_ID"
 
-          # Self-create VERIFIER permission (verifier_mode=OPEN)
-          if find_active_verifier_perm "$CUSTOM_SCHEMA_ID" "$CHILD_DID" > /dev/null 2>&1; then
-            ok "Active VERIFIER permission already exists — skipping"
+          if EXISTING_PARTICIPANT_ID=$(find_active_participant "$CUSTOM_SCHEMA_ID" "$PP_IDX_ROLE_VERIFIER" "$CHILD_DID"); then
+            ok "Active VERIFIER participant already exists: $EXISTING_PARTICIPANT_ID — skipping"
           else
-            check_balance "$USER_ACC"
-            EFFECTIVE_FROM=$(future_timestamp 15)
-            VERIFIER_PERM=$(submit_tx "create_permission" "permission_id" \
-              veranad tx perm create-perm "$CUSTOM_SCHEMA_ID" verifier "$CHILD_DID" \
-              --effective-from "$EFFECTIVE_FROM")
-            sleep 21
-            ok "VERIFIER permission created: $VERIFIER_PERM"
+            ROOT_PARTICIPANT_ID=$(find_root_participant "$CUSTOM_SCHEMA_ID")
+            if [ -z "$ROOT_PARTICIPANT_ID" ]; then
+              echo "::error::Could not find the root participant for schema $CUSTOM_SCHEMA_ID"
+              exit 1
+            fi
+            VERIFIER_PARTICIPANT_ID=$(self_create_participant "$CORPORATION" "$PP_ROLE_VERIFIER" "$ROOT_PARTICIPANT_ID" "$CHILD_DID")
+            ok "VERIFIER participant created: $VERIFIER_PARTICIPANT_ID"
           fi
 
       # -----------------------------------------------------------------------
@@ -229,14 +242,15 @@ jobs:
           push: true
           tags: |
             veranalabs/verifier-chatbot:${{ github.sha }}
-            veranalabs/verifier-chatbot:${{ env.CHILD_VS_NAME }}
+            veranalabs/verifier-chatbot:verifier-chatbot-${{ env.VS_NAME }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Deploy Verifier Chatbot
         if: inputs.step == 'deploy-chatbot' || inputs.step == 'all'
         run: |
-          NAMESPACE="${CHART_NAMESPACE}"
+          NAMESPACE="${{ secrets.K8S_NAMESPACE }}"
+          RELEASE_NAME="verifier-chatbot-${VS_NAME}"
           APP_NAME="verifier-chatbot-app-${VS_NAME}"
           IMAGE="veranalabs/verifier-chatbot:${{ github.sha }}"
           PORT="${CHATBOT_PORT:-4002}"
@@ -303,10 +317,11 @@ jobs:
       - name: Configure VS-Agent EVENTS_BASE_URL
         if: inputs.step == 'deploy-chatbot' || inputs.step == 'all'
         run: |
+          RELEASE_NAME="verifier-chatbot-${VS_NAME}"
           APP_NAME="verifier-chatbot-app-${VS_NAME}"
           CHATBOT_URL="http://${APP_NAME}:${CHATBOT_PORT:-4002}"
           kubectl set env statefulset/"${RELEASE_NAME}" \
-            -n "$CHART_NAMESPACE" \
+            -n "${{ secrets.K8S_NAMESPACE }}" \
             EVENTS_BASE_URL="$CHATBOT_URL"
 
       # -----------------------------------------------------------------------
@@ -316,7 +331,7 @@ jobs:
         if: always()
         run: |
           [ -n "${CHILD_PF_PID:-}" ] && kill "$CHILD_PF_PID" 2>/dev/null || true
-          [ -n "${ORG_PF_PID:-}" ] && kill "$ORG_PF_PID" 2>/dev/null || true
+          true
 
       - name: Summary
         if: always()
@@ -328,6 +343,7 @@ jobs:
           fi
           echo "- **Network:** ${NETWORK:-unknown}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Service:** ${VS_NAME:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Corporation ID:** ${CORPORATION_ID:-unset}" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ inputs.step }}" = "deploy-chatbot" ] || [ "${{ inputs.step }}" = "all" ]; then
             echo "- **Chatbot Image:** veranalabs/verifier-chatbot:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
           fi
