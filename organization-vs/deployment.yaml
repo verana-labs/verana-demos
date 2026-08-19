@@ -51,11 +51,16 @@ extraEnv:
     value: "https://idx.__NETWORK__.verana.network"
   - name: VERANA_CHAIN_ID
     value: "vna-__NETWORK__-1"
+  # This agent's ONLY account. It is the vs_operator of the Participant entries
+  # the workflow assigns to this DID, and it holds no OperatorAuthorization.
+  # ORGANIZATION_VS_MNEMONIC stays with the workflow, which is the Corporation
+  # operator, so this MUST be a different account — the chain forbids one
+  # account from holding both authorization types.
   - name: VERANA_ACCOUNT_MNEMONIC
     valueFrom:
       secretKeyRef:
         name: organization-vs-secrets
-        key: ORGANIZATION_VS_MNEMONIC
+        key: ORGANIZATION_VS_AGENT_MNEMONIC
   # Set by scripts/setup.sh's "bootstrap-corporation" step (corporation_id
   # printed after granting operator authorization to this agent's own account).
   - name: VERANA_CORPORATION_ID

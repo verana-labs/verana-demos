@@ -7,28 +7,38 @@
 #   1. Creates organization-vs's own Corporation and grants it operator
 #      authorization (verana.co.v1 / verana.de.v1)
 #   2. Deploys the VS Agent via Docker + ngrok, bound to that Corporation
-#   3. Waits for EcsBootstrapService to self-onboard and self-issue the
-#      Organization + Service credentials automatically (no script action)
-#   4. Validates the pending HOLDER onboarding request on the shared
-#      ecs-ecosystem VS Agent (verana-deploy) — requires kubectl access to
-#      the same cluster, port-forwarded locally
+#   3. Assigns the agent its Participant entries: a HOLDER entry on the ECS
+#      Organization schema and an ISSUER entry on the ECS Service schema
+#   4. Validates the pending HOLDER onboarding request on the ECS
+#      Organization credential issuer, which then delivers the credential
 #   5. Creates organization-vs's own "example" Ecosystem, credential schema
-#      and root participant, for issuer-*/verifier-* demo services to
+#      and root participant, for issuer-*/verifier- demo services to
 #      onboard against
 #
 # Idempotent: checks for existing resources before creating new ones.
 #
+# ---------------------------------------------------------------------------
+# Two accounts, two roles
+# ---------------------------------------------------------------------------
+# MNEMONIC       — the Corporation operator. It holds the blanket
+#                  OperatorAuthorization and signs every transaction here.
+#                  The agent never sees it.
+# AGENT_MNEMONIC — the agent's own and only account. It is the vs_operator of
+#                  the Participant entries step 3 assigns, and it holds no
+#                  OperatorAuthorization. The chain forbids one account from
+#                  holding both, so these MUST be different accounts.
+#
 # Prerequisites:
 #   - Docker, ngrok (authenticated), curl, jq, veranad, kubectl
-#   - MNEMONIC (or ORGANIZATION_VS_MNEMONIC) env var — a funded devnet
-#     account, reused as this agent's own on-chain identity
-#   - kubectl access to the cluster running verana-deploy's ecs-ecosystem
+#   - MNEMONIC (or ORGANIZATION_VS_MNEMONIC) and AGENT_MNEMONIC (or
+#     ORGANIZATION_VS_AGENT_MNEMONIC) — two funded devnet accounts
+#   - kubectl access to the cluster running verana-deploy's ecs-org-issuer
 #     release (for step 4) — port-forward it before running this script:
-#       kubectl port-forward -n vna-devnet-1 svc/ecs-ecosystem 3100:3000
+#       kubectl port-forward -n vna-devnet-1 svc/ecs-org-issuer 3101:3000
 #
 # Usage:
 #   source organization-vs/config.env
-#   MNEMONIC="..." ./organization-vs/scripts/setup.sh
+#   MNEMONIC="..." AGENT_MNEMONIC="..." ./organization-vs/scripts/setup.sh
 #
 # =============================================================================
 
@@ -54,6 +64,9 @@ VS_AGENT_DATA_DIR="${VS_AGENT_DATA_DIR:-${SERVICE_DIR}/data}"
 USER_ACC="${USER_ACC:-organization-vs-devnet-admin}"
 OUTPUT_FILE="${OUTPUT_FILE:-${SERVICE_DIR}/ids.env}"
 MNEMONIC="${MNEMONIC:-${ORGANIZATION_VS_MNEMONIC:-}}"
+# The agent's own account — see "Two accounts, two roles" in the header.
+AGENT_ACC="${AGENT_ACC:-organization-vs-devnet-agent}"
+AGENT_MNEMONIC="${AGENT_MNEMONIC:-${ORGANIZATION_VS_AGENT_MNEMONIC:-}}"
 
 # Schema
 CUSTOM_SCHEMA_URL="${CUSTOM_SCHEMA_URL:-}"
@@ -65,8 +78,11 @@ EGF_LANGUAGE="${EGF_LANGUAGE:-en}"
 EGF_DOC_URL="${EGF_DOC_URL:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
 EGF_DOC_DIGEST="${EGF_DOC_DIGEST:-}"
 
-# Organization/Service details (self-issued automatically by the agent —
-# passed through as container env vars, not issued by this script)
+# Organization and Service details.
+# The ORG_* values are the claims of the Organization credential, which the ECS
+# Organization credential issuer signs in step 4b. The SELF_ISSUED_VTC_SERVICE_*
+# container variables below cover the Service credential, which the agent
+# issues to itself.
 ORG_NAME="${ORG_NAME:-Verana Example Organization}"
 ORG_ORGANIZATION_KIND="${ORG_ORGANIZATION_KIND:-PUBLIC}"
 ORG_COUNTRY_CODE="${ORG_COUNTRY_CODE:-CH}"
@@ -109,17 +125,32 @@ ADMIN_API="http://localhost:${VS_AGENT_ADMIN_PORT}"
 # STEP 1: Set up veranad CLI account (also the agent's own on-chain identity)
 # =============================================================================
 
-log "Step 1: Set up veranad CLI account"
+log "Step 1: Set up veranad CLI accounts"
 
 if [ -n "$MNEMONIC" ]; then
   echo "$MNEMONIC" | veranad keys add "$USER_ACC" --recover --keyring-backend test 2>/dev/null || true
-  ok "Mnemonic imported for account '$USER_ACC'"
+  ok "Mnemonic imported for the operator account '$USER_ACC'"
 elif ! veranad keys show "$USER_ACC" --keyring-backend test > /dev/null 2>&1; then
   err "No MNEMONIC provided and account '$USER_ACC' does not exist."
   err "Export MNEMONIC (or ORGANIZATION_VS_MNEMONIC) with a funded devnet account and re-run."
   exit 1
 fi
 setup_veranad_account "$USER_ACC" "$FAUCET_URL"
+
+if [ -z "$AGENT_MNEMONIC" ]; then
+  err "No AGENT_MNEMONIC provided."
+  err "Export AGENT_MNEMONIC (or ORGANIZATION_VS_AGENT_MNEMONIC) with a second funded devnet account."
+  err "It becomes the agent's vs_operator, and it must differ from MNEMONIC."
+  exit 1
+fi
+if [ "$AGENT_MNEMONIC" = "$MNEMONIC" ]; then
+  err "AGENT_MNEMONIC equals MNEMONIC. The chain forbids one account from holding both"
+  err "an OperatorAuthorization and a VSOperatorAuthorization, so they must be different."
+  exit 1
+fi
+echo "$AGENT_MNEMONIC" | veranad keys add "$AGENT_ACC" --recover --keyring-backend test 2>/dev/null || true
+AGENT_ADDR=$(veranad keys show "$AGENT_ACC" -a --keyring-backend test)
+ok "Agent account (vs_operator): $AGENT_ADDR"
 
 # =============================================================================
 # STEP 2: Create Corporation (skipped if CORPORATION_ID already set)
@@ -181,7 +212,7 @@ docker run --platform linux/amd64 -d \
   -e "VERANA_RPC_ENDPOINT_URL=${NODE_RPC}" \
   -e "VERANA_INDEXER_BASE_URL=${INDEXER_URL}" \
   -e "VERANA_CHAIN_ID=${CHAIN_ID}" \
-  -e "VERANA_ACCOUNT_MNEMONIC=${MNEMONIC}" \
+  -e "VERANA_ACCOUNT_MNEMONIC=${AGENT_MNEMONIC}" \
   -e "VERANA_CORPORATION_ID=${CORPORATION_ID}" \
   -e "AGENT_MODE=standalone" \
   -e "TRUSTED_ECS_ECOSYSTEM_DIDS=${ECS_ECOSYSTEM_DID}" \
@@ -214,15 +245,101 @@ fi
 ok "Agent DID: $AGENT_DID"
 
 # =============================================================================
-# STEP 4: Validate the pending onboarding request on ecs-ecosystem
+# STEP 4a: Assign the agent its ECS Participant entries
+# =============================================================================
+# The agent holds no OperatorAuthorization, so it cannot create these itself.
+# The Corporation operator creates them here, each naming the agent account as
+# its vs_operator with the narrowest msg types its role permits.
+
+log "Step 4a: Assign the ECS Participant entries"
+
+ECS_ORG_SCHEMA_ID=$(find_ecs_schema_id "$ECS_ECOSYSTEM_DID" "OrganizationCredential") || {
+  err "Could not find the ECS Organization schema of $ECS_ECOSYSTEM_DID"
+  exit 1
+}
+ECS_SERVICE_SCHEMA_ID=$(find_ecs_schema_id "$ECS_ECOSYSTEM_DID" "ServiceCredential") || {
+  err "Could not find the ECS Service schema of $ECS_ECOSYSTEM_DID"
+  exit 1
+}
+ok "ECS schema IDs: organization=$ECS_ORG_SCHEMA_ID service=$ECS_SERVICE_SCHEMA_ID"
+
+# The Organization credential comes from the service the ECS Ecosystem
+# corporation assigned the ISSUER entry to, not from the ecosystem agent.
+ECS_ORG_ISSUER_DID=$(fetch_did_from_log "$ECS_ORG_ISSUER_PUBLIC_URL") || {
+  err "Could not read the DID of the ECS Organization credential issuer at $ECS_ORG_ISSUER_PUBLIC_URL"
+  exit 1
+}
+ECS_ORG_ISSUER_PARTICIPANT_ID=$(find_active_participant \
+  "$ECS_ORG_SCHEMA_ID" "$PP_IDX_ROLE_ISSUER" "$ECS_ORG_ISSUER_DID") || {
+  err "$ECS_ORG_ISSUER_DID holds no active ISSUER entry on the ECS Organization schema."
+  err "Run verana-deploy scripts/ecs-ecosystem/devnet-setup.sh phase 3 first."
+  exit 1
+}
+ok "ECS Organization issuer: $ECS_ORG_ISSUER_DID (participant $ECS_ORG_ISSUER_PARTICIPANT_ID)"
+
+# --- The Service ISSUER entry ------------------------------------------------
+# The Service schema is OPEN, so this needs no validation. The agent uses it
+# twice: to anchor its own self-issued Service credential, and to deliver
+# Service credentials to the delegated issuer-*/verifier- services. The
+# delivery path matches on vs_operator, so this entry must name AGENT_ADDR.
+EXISTING_SERVICE=$(find_participant_with_vs_operator \
+  "$ECS_SERVICE_SCHEMA_ID" "$PP_ROLE_ISSUER" "$AGENT_DID")
+EXISTING_SERVICE_ID=$(echo "${EXISTING_SERVICE:-}" | cut -f1)
+EXISTING_SERVICE_VS_OP=$(echo "${EXISTING_SERVICE:-}" | cut -f2)
+
+if [ -n "$EXISTING_SERVICE_ID" ] && [ "$EXISTING_SERVICE_VS_OP" = "$AGENT_ADDR" ]; then
+  ok "Service ISSUER participant $EXISTING_SERVICE_ID already names $AGENT_ADDR"
+else
+  if [ -n "$EXISTING_SERVICE_ID" ]; then
+    warn "Service ISSUER participant $EXISTING_SERVICE_ID names '$EXISTING_SERVICE_VS_OP' — revoking it"
+    veranad tx pp revoke-participant "$EXISTING_SERVICE_ID" --corporation "$CORPORATION" \
+      --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+      --fees "$FEES" --gas auto --node "$NODE_RPC" --output json -y > /dev/null 2>&1 || true
+    sleep 6
+  fi
+  ECS_SERVICE_ROOT_ID=$(find_root_participant "$ECS_SERVICE_SCHEMA_ID") || {
+    err "Could not find the ECOSYSTEM root of the ECS Service schema"
+    exit 1
+  }
+  self_create_participant "$CORPORATION" "$PP_ROLE_ISSUER" "$ECS_SERVICE_ROOT_ID" "$AGENT_DID" \
+    "$AGENT_ADDR" "$VSOA_ISSUER" > /dev/null
+fi
+
+# --- The Organization HOLDER entry -------------------------------------------
+# Its validator is the ISSUER entry above, so validating it is part of a
+# credential exchange. The agent reacts to this transaction and sends the
+# onboarding request by itself; step 4b then completes it.
+EXISTING_HOLDER=$(find_participant_with_vs_operator \
+  "$ECS_ORG_SCHEMA_ID" "$PP_ROLE_HOLDER" "$AGENT_DID")
+EXISTING_HOLDER_ID=$(echo "${EXISTING_HOLDER:-}" | cut -f1)
+EXISTING_HOLDER_VS_OP=$(echo "${EXISTING_HOLDER:-}" | cut -f2)
+
+if [ -n "$EXISTING_HOLDER_ID" ] && [ "$EXISTING_HOLDER_VS_OP" = "$AGENT_ADDR" ]; then
+  ok "Organization HOLDER participant $EXISTING_HOLDER_ID already names $AGENT_ADDR"
+else
+  if [ -n "$EXISTING_HOLDER_ID" ]; then
+    warn "Organization HOLDER participant $EXISTING_HOLDER_ID names '$EXISTING_HOLDER_VS_OP' — revoking it"
+    veranad tx pp revoke-participant "$EXISTING_HOLDER_ID" --corporation "$CORPORATION" \
+      --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+      --fees "$FEES" --gas auto --node "$NODE_RPC" --output json -y > /dev/null 2>&1 || true
+    sleep 6
+  fi
+  # HOLDER is the one role whose vs_operator may send TriggerResolver, and that
+  # is the only message this participant needs from the agent.
+  start_participant_op "$CORPORATION" "$PP_ROLE_HOLDER" "$ECS_ORG_ISSUER_PARTICIPANT_ID" "$AGENT_DID" \
+    "$AGENT_ADDR" "$VSOA_HOLDER" > /dev/null
+fi
+
+# =============================================================================
+# STEP 4b: Complete the onboarding process on the Organization credential issuer
 # =============================================================================
 
-log "Step 4: Validate ECS onboarding on ecs-ecosystem"
+log "Step 4b: Validate the ECS onboarding on the Organization credential issuer"
 
-if has_completed_flow "$ECS_ECOSYSTEM_ADMIN_API" "$AGENT_DID"; then
-  ok "Already validated on ecs-ecosystem — skipping"
+if has_completed_flow "$ECS_ORG_ISSUER_ADMIN_API" "$AGENT_DID"; then
+  ok "Already validated — skipping"
 else
-  log "Waiting for EcsBootstrapService to submit the onboarding request (up to 60s)..."
+  log "Waiting for the agent to send the onboarding request (up to 60s)..."
   sleep 20
 
   log "Computing logo digest for $ORG_LOGO_URI..."
@@ -233,7 +350,8 @@ else
 
   # The Organization credential's required subject fields (ECS OrganizationCredential
   # schema): id, name, logoUri, logoDigestSri, registryId, address, countryCode.
-  ORG_CLAIMS=$(jq -n \
+  # The issuer refuses claims that do not satisfy the schema.
+  ORG_CLAIMS=$(jq -c -n \
     --arg name "$ORG_NAME" \
     --arg logoUri "$ORG_LOGO_URI" \
     --arg logoDigestSri "$ORG_LOGO_DIGEST_SRI" \
@@ -246,14 +364,14 @@ else
       registryUri: $registryUri, address: $address, organizationKind: $organizationKind,
       countryCode: $countryCode}')
 
-  if ! validate_pending_flow "$ECS_ECOSYSTEM_ADMIN_API" "$AGENT_DID" "" "$ORG_CLAIMS"; then
-    err "Could not validate on ecs-ecosystem ($ECS_ECOSYSTEM_ADMIN_API)."
-    err "Is it port-forwarded? kubectl port-forward -n vna-devnet-1 svc/ecs-ecosystem 3100:3000"
+  if ! validate_pending_flow "$ECS_ORG_ISSUER_ADMIN_API" "$AGENT_DID" "" "$ORG_CLAIMS"; then
+    err "Could not validate on the Organization credential issuer ($ECS_ORG_ISSUER_ADMIN_API)."
+    err "Is it port-forwarded? kubectl port-forward -n vna-devnet-1 svc/ecs-org-issuer 3101:3000"
     exit 1
   fi
 fi
 
-log "Waiting for the Organization + Service credentials to be self-issued (up to 30s)..."
+log "Waiting for the Organization and Service credentials to appear (up to 30s)..."
 sleep 20
 ok "Check: ${NGROK_URL}/.well-known/did.json"
 

@@ -115,9 +115,19 @@ jobs:
           chmod +x /usr/local/bin/veranad
           veranad version
 
-      - name: Import account from mnemonic
+      # ORGANIZATION_VS_MNEMONIC is the Corporation operator, which signs every
+      # transaction here. ORGANIZATION_VS_AGENT_MNEMONIC is the agent's own and
+      # only account, imported so the workflow can read its address and name it
+      # as the vs_operator of the Participant entries it assigns. The chain
+      # forbids one account from holding both authorization types, so the two
+      # secrets MUST hold different accounts.
+      - name: Import accounts from mnemonics
         run: |
           echo "${{ secrets.ORGANIZATION_VS_MNEMONIC }}" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
+          echo "${{ secrets.ORGANIZATION_VS_AGENT_MNEMONIC }}" | veranad keys add "${{ env.AGENT_ACC }}" --recover --keyring-backend test
+          AGENT_ADDR=$(veranad keys show "${{ env.AGENT_ACC }}" -a --keyring-backend test)
+          echo "AGENT_ADDR=${AGENT_ADDR}" >> "$GITHUB_ENV"
+          echo "Agent account (vs_operator): ${AGENT_ADDR}"
 
       # -----------------------------------------------------------------------
       # BOOTSTRAP-CORPORATION: create organization-vs's own Corporation
@@ -146,7 +156,8 @@ jobs:
           kubectl create namespace "$CHART_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n "$CHART_NAMESPACE" get secret organization-vs-secrets > /dev/null 2>&1 || \
           kubectl -n "$CHART_NAMESPACE" create secret generic organization-vs-secrets \
-            --from-literal=ORGANIZATION_VS_MNEMONIC="${{ secrets.ORGANIZATION_VS_MNEMONIC }}"
+            --from-literal=ORGANIZATION_VS_MNEMONIC="${{ secrets.ORGANIZATION_VS_MNEMONIC }}" \
+            --from-literal=ORGANIZATION_VS_AGENT_MNEMONIC="${{ secrets.ORGANIZATION_VS_AGENT_MNEMONIC }}"
 
       - name: Deploy VS Agent via Helm
         if: inputs.step == 'deploy' || inputs.step == 'all'
@@ -209,14 +220,16 @@ jobs:
           }
           echo "Port-forward established"
 
-      - name: Port-forward ecs-ecosystem admin API
+      # The Organization credential comes from the service the ECS Ecosystem
+      # corporation assigned the ISSUER entry to, not from the ecosystem agent.
+      - name: Port-forward ecs-org-issuer admin API
         if: inputs.step == 'validate-ecs-onboarding' || inputs.step == 'all'
         run: |
-          kubectl port-forward -n "$CHART_NAMESPACE" svc/ecs-ecosystem 3100:3000 &
+          kubectl port-forward -n "$CHART_NAMESPACE" svc/ecs-org-issuer 3101:3000 &
           echo "ECS_PF_PID=$!" >> "$GITHUB_ENV"
           sleep 5
-          curl -sf http://localhost:3100/v1/agent > /dev/null || {
-            echo "Port-forward to ecs-ecosystem failed — is it deployed in $CHART_NAMESPACE?"
+          curl -sf http://localhost:3101/v1/agent > /dev/null || {
+            echo "Port-forward to ecs-org-issuer failed — is it deployed in $CHART_NAMESPACE?"
             exit 1
           }
           echo "Port-forward established"
@@ -230,14 +243,68 @@ jobs:
           source common/common.sh
           set_network_vars "$NETWORK"
 
+          resolve_corporation "$CORPORATION_ID"
+
           AGENT_DID=$(curl -sf "http://localhost:3000/v1/agent" | jq -r '.publicDid')
           echo "AGENT_DID=${AGENT_DID}" >> "$GITHUB_ENV"
           ok "Agent DID: $AGENT_DID"
 
-          if has_completed_flow "http://localhost:3100" "$AGENT_DID"; then
-            ok "Already validated on ecs-ecosystem — skipping"
+          # --- Assign the ECS Participant entries ------------------------------
+          # The agent holds no OperatorAuthorization, so the Corporation
+          # operator creates these, each naming AGENT_ADDR as its vs_operator.
+          ECS_ORG_SCHEMA_ID=$(find_ecs_schema_id "$ECS_ECOSYSTEM_DID" "OrganizationCredential")
+          ECS_SERVICE_SCHEMA_ID=$(find_ecs_schema_id "$ECS_ECOSYSTEM_DID" "ServiceCredential")
+          ok "ECS schema IDs: organization=$ECS_ORG_SCHEMA_ID service=$ECS_SERVICE_SCHEMA_ID"
+
+          ECS_ORG_ISSUER_DID=$(fetch_did_from_log "$ECS_ORG_ISSUER_PUBLIC_URL")
+          ECS_ORG_ISSUER_PARTICIPANT_ID=$(find_active_participant \
+            "$ECS_ORG_SCHEMA_ID" "$PP_IDX_ROLE_ISSUER" "$ECS_ORG_ISSUER_DID") || {
+            echo "::error::$ECS_ORG_ISSUER_DID holds no active ISSUER entry on the ECS Organization schema"
+            exit 1
+          }
+          ok "ECS Organization issuer participant: $ECS_ORG_ISSUER_PARTICIPANT_ID"
+
+          # The Service schema is OPEN, so its entry needs no validation. The
+          # agent uses it to anchor its own Service credential and to deliver
+          # Service credentials to the delegated issuer-*/verifier- services.
+          if ! find_participant_with_vs_operator "$ECS_SERVICE_SCHEMA_ID" "$PP_ROLE_ISSUER" "$AGENT_DID" \
+               | grep -q "$AGENT_ADDR"; then
+            ECS_SERVICE_ROOT_ID=$(find_root_participant "$ECS_SERVICE_SCHEMA_ID")
+            self_create_participant "$CORPORATION" "$PP_ROLE_ISSUER" "$ECS_SERVICE_ROOT_ID" "$AGENT_DID" \
+              "$AGENT_ADDR" "$VSOA_ISSUER"
           else
-            validate_pending_flow "http://localhost:3100" "$AGENT_DID"
+            ok "Service ISSUER entry already names $AGENT_ADDR"
+          fi
+
+          # HOLDER is the one role whose vs_operator may send TriggerResolver.
+          if ! find_participant_with_vs_operator "$ECS_ORG_SCHEMA_ID" "$PP_ROLE_HOLDER" "$AGENT_DID" \
+               | grep -q "$AGENT_ADDR"; then
+            start_participant_op "$CORPORATION" "$PP_ROLE_HOLDER" "$ECS_ORG_ISSUER_PARTICIPANT_ID" "$AGENT_DID" \
+              "$AGENT_ADDR" "$VSOA_HOLDER"
+            log "Waiting for the agent to send the onboarding request..."
+            sleep 20
+          else
+            ok "Organization HOLDER entry already names $AGENT_ADDR"
+          fi
+
+          # --- Complete the onboarding process --------------------------------
+          if has_completed_flow "http://localhost:3101" "$AGENT_DID"; then
+            ok "Already validated — skipping"
+          else
+            ORG_LOGO_DIGEST_SRI=$(sri_digest_sha384 "$ORG_LOGO_URI")
+            ORG_CLAIMS=$(jq -c -n \
+              --arg name "$ORG_NAME" \
+              --arg logoUri "$ORG_LOGO_URI" \
+              --arg logoDigestSri "$ORG_LOGO_DIGEST_SRI" \
+              --arg registryId "$ORG_REGISTRY_ID" \
+              --arg registryUri "$ORG_REGISTRY_URI" \
+              --arg address "$ORG_ADDRESS" \
+              --arg organizationKind "$ORG_ORGANIZATION_KIND" \
+              --arg countryCode "$ORG_COUNTRY_CODE" \
+              '{name: $name, logoUri: $logoUri, logoDigestSri: $logoDigestSri, registryId: $registryId,
+                registryUri: $registryUri, address: $address, organizationKind: $organizationKind,
+                countryCode: $countryCode}')
+            validate_pending_flow "http://localhost:3101" "$AGENT_DID" "" "$ORG_CLAIMS"
           fi
 
       # -----------------------------------------------------------------------

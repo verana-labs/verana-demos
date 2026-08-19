@@ -43,9 +43,17 @@ set_network_vars() {
       FAUCET_URL="https://faucet-vs.devnet.verana.network/invitation"
       INDEXER_URL="${INDEXER_URL:-https://idx.devnet.verana.network}"
       # The shared ECS Ecosystem VS Agent (verana-deploy/scripts/ecs-ecosystem).
+      # It defines the ECS schemas. It does NOT issue the Organization
+      # credentials — see ECS_ORG_ISSUER_* below.
       ECS_ECOSYSTEM_DID="${ECS_ECOSYSTEM_DID:-did:webvh:QmZyuWxj9pnAzgvzZT4h2fZWknXVab9J5EEk911S6sMcXp:ecs-ecosystem.devnet.verana.network}"
       # Port-forward before use: kubectl port-forward -n vna-devnet-1 svc/ecs-ecosystem 3100:3000
       ECS_ECOSYSTEM_ADMIN_API="${ECS_ECOSYSTEM_ADMIN_API:-http://localhost:3100}"
+      # The Verifiable Service the ECS Ecosystem corporation assigned the
+      # ISSUER Participant entry on the Organization schema. Every ECS
+      # Organization credential comes from here, over the onboarding process.
+      # Port-forward before use: kubectl port-forward -n vna-devnet-1 svc/ecs-org-issuer 3101:3000
+      ECS_ORG_ISSUER_PUBLIC_URL="${ECS_ORG_ISSUER_PUBLIC_URL:-https://ecs-org-issuer.devnet.verana.network}"
+      ECS_ORG_ISSUER_ADMIN_API="${ECS_ORG_ISSUER_ADMIN_API:-http://localhost:3101}"
       ;;
     testnet)
       err "testnet is not wired up on this branch (v4/devnet only). Use NETWORK=devnet."
@@ -58,7 +66,21 @@ set_network_vars() {
   esac
 
   export CHAIN_ID NODE_RPC FEES FAUCET_URL INDEXER_URL ECS_ECOSYSTEM_DID ECS_ECOSYSTEM_ADMIN_API
+  export ECS_ORG_ISSUER_PUBLIC_URL ECS_ORG_ISSUER_ADMIN_API
 }
+
+# ---------------------------------------------------------------------------
+# VSOperatorAuthorization message types, per participant role
+# ---------------------------------------------------------------------------
+# A VS Agent uses exactly ONE Verana account, and that account is the
+# vs_operator of the participants this script assigns to it. The chain accepts
+# only these msg types per role, and rejects any other value at creation time
+# (vsoaPermittedMsgTypes, verana-node x/pp/types/types.go). The Corporation
+# operator account, which runs these scripts, holds the OperatorAuthorization
+# instead; one account can never hold both.
+readonly VSOA_ISSUER="/verana.pp.v1.MsgCreateOrUpdateParticipantSession,/verana.pp.v1.MsgSetParticipantOPToValidated"
+readonly VSOA_VERIFIER="/verana.pp.v1.MsgCreateOrUpdateParticipantSession"
+readonly VSOA_HOLDER="/verana.pp.v1.MsgTriggerResolver"
 
 # ---------------------------------------------------------------------------
 # Transaction helpers
@@ -617,12 +639,24 @@ start_participant_op() {
   local role=$2
   local validator_participant_id=$3
   local did=$4
+  local vs_operator="${5:-}"
+  local vs_operator_msg_types="${6:-}"
+
+  # The vs_operator and its msg types are frozen at creation: the only way to
+  # correct them later is to revoke the participant and create it again.
+  local vsoa_args=()
+  if [ -n "$vs_operator" ]; then
+    vsoa_args=(--vs-operator "$vs_operator"
+               --vs-operator-authz-msg-types "$vs_operator_msg_types"
+               --vs-operator-authz-with-feegrant)
+  fi
 
   log "Starting participant OP (role=$role) against validator $validator_participant_id..."
   local raw_output
   raw_output=$(veranad tx pp start-participant-op \
     "$role" "$validator_participant_id" "$did" \
     --corporation "$corporation" \
+    "${vsoa_args[@]}" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
     --fees "$FEES" --gas auto --node "$NODE_RPC" \
     --output json -y 2>&1) || true
@@ -655,12 +689,22 @@ self_create_participant() {
   local role=$2
   local validator_participant_id=$3
   local did=$4
+  local vs_operator="${5:-}"
+  local vs_operator_msg_types="${6:-}"
+
+  local vsoa_args=()
+  if [ -n "$vs_operator" ]; then
+    vsoa_args=(--vs-operator "$vs_operator"
+               --vs-operator-authz-msg-types "$vs_operator_msg_types"
+               --vs-operator-authz-with-feegrant)
+  fi
 
   log "Self-creating participant (role=$role) against validator $validator_participant_id..."
   local raw_output
   raw_output=$(veranad tx pp self-create-participant \
     "$role" "$validator_participant_id" "$did" \
     --corporation "$corporation" \
+    "${vsoa_args[@]}" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
     --fees "$FEES" --gas auto --node "$NODE_RPC" \
     --output json -y 2>&1) || true
@@ -712,6 +756,57 @@ find_active_participant() {
     return 0
   fi
   return 1
+}
+
+# Find a participant of a DID/schema/role and print "<id>\t<vs_operator>".
+# Unlike find_active_participant this also returns a PENDING entry, and it
+# reports the vs_operator, so a caller can tell an entry it can use from one
+# that names a different account and has to be recreated.
+# Usage: find_participant_with_vs_operator <schema_id> <role> <did>
+find_participant_with_vs_operator() {
+  local schema_id=$1
+  local role=$2
+  local did=$3
+  veranad query pp list-participants --schema-id "$schema_id" --role "$role" --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -r --arg did "$did" '(.participants // [])[]
+        | select(.did == $did and .revoked == null and .slashed == null)
+        | [(.id|tostring), (.vs_operator // "")] | @tsv' \
+    | head -1
+}
+
+# Read a VS Agent's public DID from its did:webvh log. Each line of the log is
+# a version entry, and .state.id carries the DID, which is SCID-stable across
+# versions.
+# Usage: fetch_did_from_log <public_base_url>
+fetch_did_from_log() {
+  local base_url=$1
+  local did_log did
+  did_log=$(curl -sf "${base_url}/.well-known/did.jsonl" 2>/dev/null) || return 1
+  did=$(echo "$did_log" | tail -1 | jq -r '.state.id // empty' 2>/dev/null)
+  [ -z "$did" ] && return 1
+  echo "$did"
+}
+
+# Find an ECS credential schema by its JSON Schema title, under the Ecosystem
+# that a given DID controls.
+# Usage: find_ecs_schema_id <ecosystem_did> <title>
+#   title: OrganizationCredential | PersonaCredential | ServiceCredential | UserAgentCredential
+find_ecs_schema_id() {
+  local ecosystem_did=$1
+  local title=$2
+
+  local ecosystem_id
+  ecosystem_id=$(curl -sf "${INDEXER_URL}/v4/ecosystem/list" 2>/dev/null \
+    | jq -r --arg did "$ecosystem_did" '(.ecosystems // [])[]
+        | select(.did == $did and (.archived == null or .archived == false)) | .id' | head -1)
+  [ -z "$ecosystem_id" ] && return 1
+
+  local schema_id
+  schema_id=$(veranad query cs list-schemas --ecosystem_id "$ecosystem_id" --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -r --arg title "$title" '(.schemas // [])[]
+        | select((.json_schema | fromjson | .title) == $title) | .id' | head -1)
+  [ -z "$schema_id" ] && return 1
+  echo "$schema_id"
 }
 
 # Check the v4 indexer for the (root, ECOSYSTEM-role) active participant of a
