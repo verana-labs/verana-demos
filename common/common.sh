@@ -892,7 +892,7 @@ validate_pending_flow() {
   local claims_json="${4:-}"
 
   log "Looking up pending vt-flow from $peer_did on $admin_api..."
-  local query="role=Validator&flowState=AWAITING_OR&peerDID=$(printf '%s' "$peer_did" | jq -sRr @uri)"
+  local query="role=validator&flowState=AWAITING_OR&peerDID=$(printf '%s' "$peer_did" | jq -sRr @uri)"
   [ -n "$schema_id" ] && query="${query}&schema_id=${schema_id}"
 
   local flows
@@ -943,7 +943,7 @@ validate_pending_flow() {
 has_completed_flow() {
   local admin_api=$1
   local peer_did=$2
-  local query="role=Validator&peerDID=$(printf '%s' "$peer_did" | jq -sRr @uri)"
+  local query="role=validator&peerDID=$(printf '%s' "$peer_did" | jq -sRr @uri)"
 
   local flows
   flows=$(curl -sf "${admin_api}/v1/vt/flows?${query}" 2>/dev/null) || return 1
