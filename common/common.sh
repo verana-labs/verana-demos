@@ -45,7 +45,7 @@ set_network_vars() {
       # The shared ECS Ecosystem VS Agent (verana-deploy/scripts/ecs-ecosystem).
       # It defines the ECS schemas. It does NOT issue the Organization
       # credentials — see ECS_ORG_ISSUER_* below.
-      ECS_ECOSYSTEM_DID="${ECS_ECOSYSTEM_DID:-did:webvh:QmZyuWxj9pnAzgvzZT4h2fZWknXVab9J5EEk911S6sMcXp:ecs-ecosystem.devnet.verana.network}"
+      ECS_ECOSYSTEM_DID="${ECS_ECOSYSTEM_DID:-did:webvh:QmbZCrGJxpy2KC5bt5d7bkFJJfyEcSUzKAqCgzvKSYsgws:ecs-ecosystem.devnet.verana.network}"
       # Port-forward before use: kubectl port-forward -n vna-devnet-1 svc/ecs-ecosystem 3100:3000
       ECS_ECOSYSTEM_ADMIN_API="${ECS_ECOSYSTEM_ADMIN_API:-http://localhost:3100}"
       # The Verifiable Service the ECS Ecosystem corporation assigned the

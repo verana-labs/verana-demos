@@ -70,7 +70,7 @@ extraEnv:
   # The shared ECS Ecosystem this service joins to obtain its own ECS
   # credentials — see verana-deploy/scripts/ecs-ecosystem (devnet only).
   - name: TRUSTED_ECS_ECOSYSTEM_DIDS
-    value: "did:webvh:QmZyuWxj9pnAzgvzZT4h2fZWknXVab9J5EEk911S6sMcXp:ecs-ecosystem.devnet.verana.network"
+    value: "did:webvh:QmbZCrGJxpy2KC5bt5d7bkFJJfyEcSUzKAqCgzvKSYsgws:ecs-ecosystem.devnet.verana.network"
   # Organization credential claims (self-issued by EcsBootstrapService)
   - name: SELF_ISSUED_VTC_ORG_ORGANIZATIONKIND
     value: "PUBLIC"
