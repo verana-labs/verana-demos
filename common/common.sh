@@ -310,6 +310,21 @@ compute_sri_digest() {
 # CLI setup helpers
 # ---------------------------------------------------------------------------
 
+# Derive USER_ACC_ADDR from the keyring when the caller has not set it. The
+# interactive setup_veranad_account sets it, but CI imports the key directly and
+# never calls that helper. An empty value reaches the chain as an empty member
+# address, which fails with "members[0].address is required".
+require_user_acc_addr() {
+  if [ -z "${USER_ACC_ADDR:-}" ]; then
+    USER_ACC_ADDR=$(veranad keys show "$USER_ACC" -a --keyring-backend test 2>/dev/null) || true
+    export USER_ACC_ADDR
+  fi
+  if [ -z "${USER_ACC_ADDR:-}" ]; then
+    err "Could not derive an address for '$USER_ACC'. Is the key in the keyring?"
+    return 1
+  fi
+}
+
 # Ensure veranad account exists and is funded
 # Usage: setup_veranad_account <user_acc> <faucet_url>
 setup_veranad_account() {
@@ -376,6 +391,7 @@ future_timestamp() {
 # CORPORATION (policy address) on success.
 # Usage: create_corporation <did> [doc_url] [doc_digest_sri] [msg_types_json_array]
 create_corporation() {
+  require_user_acc_addr || return 1
   local did=$1
   local doc_url="${2:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
   local doc_digest="${3:-}"
@@ -486,6 +502,7 @@ resolve_corporation() {
 # never removes a message type another role still needs.
 # Usage: ensure_operator_authorization <corporation> <grantee> <msg_types_json>
 ensure_operator_authorization() {
+  require_user_acc_addr || return 1
   local corporation=$1
   local grantee=$2
   local required=$3

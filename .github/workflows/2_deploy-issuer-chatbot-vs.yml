@@ -93,6 +93,9 @@ jobs:
             exit 1
           fi
           echo "$OPERATOR_MNEMONIC" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
+          USER_ACC_ADDR=$(veranad keys show "${{ env.USER_ACC }}" -a --keyring-backend test)
+          echo "USER_ACC_ADDR=${USER_ACC_ADDR}" >> "$GITHUB_ENV"
+          echo "Corporation operator: ${USER_ACC_ADDR}"
 
       # -----------------------------------------------------------------------
       # BOOTSTRAP-CORPORATION: create issuer-chatbot-vs's own Corporation
