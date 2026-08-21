@@ -126,9 +126,10 @@ log "Step 2: Corporation"
 if [ -n "${CORPORATION_ID:-}" ]; then
   ok "Using existing CORPORATION_ID=$CORPORATION_ID"
   resolve_corporation "$CORPORATION_ID"
+  ensure_operator_authorization "$CORPORATION" "$USER_ACC_ADDR" "$OA_MSGS_VERIFIER"
 else
   create_corporation "did:example:verifier-chatbot-vs-${CHAIN_ID}" "$EGF_DOC_URL" "" \
-    '["/verana.pp.v1.MsgSelfCreateParticipant"]'
+    "$OA_MSGS_VERIFIER"
   ok "Corporation created: CORPORATION_ID=$CORPORATION_ID — add this to verifier-chatbot-vs/config.env to skip next time"
 fi
 

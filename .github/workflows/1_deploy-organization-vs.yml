@@ -152,6 +152,7 @@ jobs:
           if [ -n "${CORPORATION_ID:-}" ]; then
             ok "CORPORATION_ID=$CORPORATION_ID already set — skipping (resolving policy_address to confirm it exists)"
             resolve_corporation "$CORPORATION_ID"
+            ensure_operator_authorization "$CORPORATION" "$USER_ACC_ADDR" "$OA_MSGS_ECOSYSTEM"
           else
             create_corporation "did:example:organization-vs-${CHAIN_ID}" "$EGF_DOC_URL"
             echo "::notice::Corporation created: CORPORATION_ID=$CORPORATION_ID"

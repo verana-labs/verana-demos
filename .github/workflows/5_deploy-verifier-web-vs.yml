@@ -100,9 +100,10 @@ jobs:
           if [ -n "${CORPORATION_ID:-}" ]; then
             ok "CORPORATION_ID=$CORPORATION_ID already set — resolving to confirm it exists"
             resolve_corporation "$CORPORATION_ID"
+            ensure_operator_authorization "$CORPORATION" "$USER_ACC_ADDR" "$OA_MSGS_VERIFIER"
           else
             create_corporation "did:example:verifier-web-vs-${CHAIN_ID}" "$EGF_DOC_URL" "" \
-              '["/verana.pp.v1.MsgSelfCreateParticipant"]'
+              "$OA_MSGS_VERIFIER"
             echo "::notice::Corporation created: CORPORATION_ID=$CORPORATION_ID"
             echo "::notice::Set 'corporation-id: $CORPORATION_ID' as the workflow input (and CORPORATION_ID in verifier-web-vs/config.env) before running 'deploy'."
           fi

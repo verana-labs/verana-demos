@@ -130,9 +130,10 @@ log "Step 2: Corporation"
 if [ -n "${CORPORATION_ID:-}" ]; then
   ok "Using existing CORPORATION_ID=$CORPORATION_ID"
   resolve_corporation "$CORPORATION_ID"
+  ensure_operator_authorization "$CORPORATION" "$USER_ACC_ADDR" "$OA_MSGS_ISSUER"
 else
   create_corporation "did:example:issuer-chatbot-vs-${CHAIN_ID}" "$EGF_DOC_URL" "" \
-    '["/verana.pp.v1.MsgStartParticipantOP","/verana.pp.v1.MsgRenewParticipantOP","/verana.pp.v1.MsgCancelParticipantOPLastRequest"]'
+    "$OA_MSGS_ISSUER"
   ok "Corporation created: CORPORATION_ID=$CORPORATION_ID — add this to issuer-chatbot-vs/config.env to skip next time"
 fi
 

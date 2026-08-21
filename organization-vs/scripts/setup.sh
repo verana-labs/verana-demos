@@ -161,6 +161,7 @@ log "Step 2: Corporation"
 if [ -n "${CORPORATION_ID:-}" ]; then
   ok "Using existing CORPORATION_ID=$CORPORATION_ID"
   resolve_corporation "$CORPORATION_ID"
+  ensure_operator_authorization "$CORPORATION" "$USER_ACC_ADDR" "$OA_MSGS_ECOSYSTEM"
 else
   create_corporation "did:example:organization-vs-${CHAIN_ID}" "$EGF_DOC_URL"
   ok "Corporation created: CORPORATION_ID=$CORPORATION_ID — add this to organization-vs/config.env to skip next time"

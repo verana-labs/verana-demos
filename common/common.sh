@@ -25,7 +25,12 @@
 
 log()  { echo -e "\n\033[1;34m▶ $1\033[0m" >&2; }
 ok()   { echo -e "  \033[1;32m✔ $1\033[0m" >&2; }
-err()  { echo -e "  \033[1;31m✘ $1\033[0m" >&2; }
+err()  {
+  echo -e "  \033[1;31m✘ $1\033[0m" >&2
+  # `set -e` aborts the step right after most err calls, and the last stderr
+  # lines can lose the race with the runner log. An annotation always survives.
+  [ -n "${GITHUB_ACTIONS:-}" ] && echo "::error::$1" || true
+}
 warn() { echo -e "  \033[1;33m⚠ $1\033[0m" >&2; }
 
 # ---------------------------------------------------------------------------
@@ -81,6 +86,21 @@ set_network_vars() {
 readonly VSOA_ISSUER="/verana.pp.v1.MsgCreateOrUpdateParticipantSession,/verana.pp.v1.MsgSetParticipantOPToValidated"
 readonly VSOA_VERIFIER="/verana.pp.v1.MsgCreateOrUpdateParticipantSession"
 readonly VSOA_HOLDER="/verana.pp.v1.MsgTriggerResolver"
+
+# ---------------------------------------------------------------------------
+# OperatorAuthorization message types, per service role
+# ---------------------------------------------------------------------------
+# The blanket grant the Corporation gives its operator account. Keep each list
+# to what the role actually sends. A Corporation created for a narrow role must
+# widen its grant before it takes on a wider one — the chain checks each message
+# type separately, so a missing entry surfaces much later, at the first
+# transaction that needs it. Use ensure_operator_authorization for that.
+#
+# MsgCreateOrUpdateParticipantSession is deliberately absent: the chain refuses
+# it in a blanket grant, and delegates it per participant through the VSOA.
+readonly OA_MSGS_ECOSYSTEM='["/verana.ec.v1.MsgCreateEcosystem","/verana.ec.v1.MsgUpdateEcosystem","/verana.ec.v1.MsgArchiveEcosystem","/verana.cs.v1.MsgCreateCredentialSchema","/verana.pp.v1.MsgCreateRootParticipant","/verana.pp.v1.MsgStartParticipantOP","/verana.pp.v1.MsgSetParticipantOPToValidated","/verana.pp.v1.MsgRenewParticipantOP","/verana.pp.v1.MsgCancelParticipantOPLastRequest","/verana.pp.v1.MsgSelfCreateParticipant","/verana.pp.v1.MsgRevokeParticipant","/verana.pp.v1.MsgTriggerResolver"]'
+readonly OA_MSGS_ISSUER='["/verana.pp.v1.MsgStartParticipantOP","/verana.pp.v1.MsgRenewParticipantOP","/verana.pp.v1.MsgCancelParticipantOPLastRequest"]'
+readonly OA_MSGS_VERIFIER='["/verana.pp.v1.MsgSelfCreateParticipant"]'
 
 # ---------------------------------------------------------------------------
 # Transaction helpers
@@ -361,7 +381,7 @@ create_corporation() {
   local doc_digest="${3:-}"
   local msg_types="$4"
   if [ -z "$msg_types" ]; then
-    msg_types='["/verana.ec.v1.MsgCreateEcosystem","/verana.ec.v1.MsgUpdateEcosystem","/verana.ec.v1.MsgArchiveEcosystem","/verana.cs.v1.MsgCreateCredentialSchema","/verana.pp.v1.MsgCreateRootParticipant","/verana.pp.v1.MsgStartParticipantOP","/verana.pp.v1.MsgSetParticipantOPToValidated","/verana.pp.v1.MsgRenewParticipantOP","/verana.pp.v1.MsgCancelParticipantOPLastRequest","/verana.pp.v1.MsgSelfCreateParticipant","/verana.pp.v1.MsgRevokeParticipant","/verana.pp.v1.MsgTriggerResolver","/verana.di.v1.MsgStoreDigest"]'
+    msg_types="$OA_MSGS_ECOSYSTEM"
   fi
 
   if [ -z "$doc_digest" ]; then
@@ -457,6 +477,47 @@ resolve_corporation() {
   fi
   ok "Corporation $corporation_id policy_address: $CORPORATION"
   export CORPORATION
+}
+
+# Make sure the operator's blanket OperatorAuthorization covers every message
+# type the service sends. A Corporation created for a narrow role keeps that
+# narrow grant, so a service that later takes on a wider role fails at its first
+# transaction of the new kind, far from the cause. Re-grants the union, so it
+# never removes a message type another role still needs.
+# Usage: ensure_operator_authorization <corporation> <grantee> <msg_types_json>
+ensure_operator_authorization() {
+  local corporation=$1
+  local grantee=$2
+  local required=$3
+
+  local granted
+  granted=$(veranad query de list-operator-authorizations --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -c --arg g "$grantee" '[(.operator_authorizations // [])[]
+        | select(.operator == $g and (.revoked // null) == null)
+        | .msg_types[]] | unique') || granted='[]'
+  [ -n "$granted" ] || granted='[]'
+
+  local missing
+  missing=$(jq -c -n --argjson have "$granted" --argjson want "$required" '$want - $have')
+  if [ "$missing" = "[]" ]; then
+    ok "Operator authorization already covers every required message type"
+    return 0
+  fi
+  warn "Operator authorization is missing: $(echo "$missing" | jq -r 'join(", ")')"
+
+  local union
+  union=$(jq -c -n --argjson have "$granted" --argjson want "$required" '($have + $want) | unique')
+  local grant_msg
+  grant_msg=$(jq -c -n --arg c "$corporation" --arg g "$grantee" --argjson m "$union" \
+    '{"@type":"/verana.de.v1.MsgGrantOperatorAuthorization",corporation:$c,operator:$c,grantee:$g,msg_types:$m,with_feegrant:true}')
+
+  log "Widening the operator authorization to $(echo "$union" | jq -r 'length') message types..."
+  exec_group_proposal "$corporation" "Widen operator authorization" "$grant_msg" > /dev/null || {
+    err "Could not widen the operator authorization for $grantee"
+    return 1
+  }
+  sleep 6
+  ok "Operator authorization widened"
 }
 
 # ---------------------------------------------------------------------------
