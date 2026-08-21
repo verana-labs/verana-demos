@@ -85,8 +85,14 @@ jobs:
           veranad version
 
       - name: Import account from mnemonic
+        env:
+          OPERATOR_MNEMONIC: ${{ secrets.VS_DEMO_MNEMONIC }}
         run: |
-          echo "${{ secrets.ISSUER_WEB_VS_MNEMONIC }}" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
+          if [ -z "$OPERATOR_MNEMONIC" ]; then
+            echo "::error::Repository secret VS_DEMO_MNEMONIC is empty. Set it as a repository secret (Settings -> Secrets and variables -> Actions -> Repository secrets). Environment secrets do not work here, because this job declares no environment."
+            exit 1
+          fi
+          echo "$OPERATOR_MNEMONIC" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
 
       # -----------------------------------------------------------------------
       # BOOTSTRAP-CORPORATION: create issuer-web-vs's own Corporation
@@ -158,7 +164,7 @@ jobs:
           kubectl create namespace "$CHART_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n "$CHART_NAMESPACE" get secret issuer-web-vs-secrets > /dev/null 2>&1 || \
           kubectl -n "$CHART_NAMESPACE" create secret generic issuer-web-vs-secrets \
-            --from-literal=ISSUER_WEB_VS_MNEMONIC="${{ secrets.ISSUER_WEB_VS_MNEMONIC }}"
+            --from-literal=ISSUER_WEB_VS_MNEMONIC="${{ secrets.VS_DEMO_MNEMONIC }}"
 
       - name: Deploy VS Agent via Helm
         if: inputs.step == 'deploy' || inputs.step == 'all'
