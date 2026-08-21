@@ -99,7 +99,7 @@ SERVICE_DESCRIPTION="${SERVICE_DESCRIPTION:-Organization service for the Verana 
 
 if ! command -v veranad &> /dev/null; then
   log "veranad not found — downloading..."
-  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.2-dev.2}"
+  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.2}"
   PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
   case "$ARCH" in

@@ -109,7 +109,7 @@ jobs:
 
       - name: Install veranad
         run: |
-          VERANAD_VERSION="v0.10.2-dev.2"
+          VERANAD_VERSION="v0.10.2"
           curl -sfL "https://github.com/verana-labs/verana-node/releases/download/${VERANAD_VERSION}/veranad-linux-amd64" \
             -o /usr/local/bin/veranad
           chmod +x /usr/local/bin/veranad
@@ -122,9 +122,20 @@ jobs:
       # forbids one account from holding both authorization types, so the two
       # secrets MUST hold different accounts.
       - name: Import accounts from mnemonics
+        env:
+          OPERATOR_MNEMONIC: ${{ secrets.ORGANIZATION_VS_MNEMONIC }}
+          AGENT_MNEMONIC: ${{ secrets.ORGANIZATION_VS_AGENT_MNEMONIC }}
         run: |
-          echo "${{ secrets.ORGANIZATION_VS_MNEMONIC }}" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
-          echo "${{ secrets.ORGANIZATION_VS_AGENT_MNEMONIC }}" | veranad keys add "${{ env.AGENT_ACC }}" --recover --keyring-backend test
+          # An unset secret expands to an empty string, and `veranad keys add
+          # --recover` then prints its usage text instead of a cause. Say it plainly.
+          for name in OPERATOR_MNEMONIC AGENT_MNEMONIC; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret for ${name} is empty. Set ORGANIZATION_VS_MNEMONIC and ORGANIZATION_VS_AGENT_MNEMONIC as repository secrets (Settings -> Secrets and variables -> Actions -> Repository secrets). Environment secrets do not work here, because this job declares no environment."
+              exit 1
+            fi
+          done
+          echo "$OPERATOR_MNEMONIC" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
+          echo "$AGENT_MNEMONIC" | veranad keys add "${{ env.AGENT_ACC }}" --recover --keyring-backend test
           AGENT_ADDR=$(veranad keys show "${{ env.AGENT_ACC }}" -a --keyring-backend test)
           echo "AGENT_ADDR=${AGENT_ADDR}" >> "$GITHUB_ENV"
           echo "Agent account (vs_operator): ${AGENT_ADDR}"

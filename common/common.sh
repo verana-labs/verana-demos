@@ -13,7 +13,7 @@
 #   - Schema download / logo helpers
 #   - AnonCreds VTJSC discovery
 #
-# CLI syntax verified directly against a live veranad v0.10.2-dev.1 binary and
+# CLI syntax verified directly against a live veranad v0.10.2 binary and
 # the v0.10.1 verana-node source — see verana-deploy/scripts/ecs-ecosystem/common.sh
 # and docs/14-ecs-ecosystem.md for how each one was confirmed.
 #
