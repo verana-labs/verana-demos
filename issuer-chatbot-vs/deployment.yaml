@@ -4,7 +4,7 @@
 # substitutes __NETWORK__, __VS_NAME__, __CHILD_VS_NAME__, __CORPORATION_ID__
 # and __ORG_VS_DID__ placeholders at deploy time.
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v2.0.0-dev.6
+chartVersion: v2.0.0-dev.16
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
