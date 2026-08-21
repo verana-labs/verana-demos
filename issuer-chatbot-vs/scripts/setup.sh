@@ -98,7 +98,9 @@ fi
 ok "Organization VS admin API reachable: $ORG_VS_ADMIN_URL"
 
 ORG_PUBLIC_API="${ORG_VS_PUBLIC_URL:-http://localhost:${ORG_VS_PUBLIC_PORT:-3001}}"
-ORG_DID=$(curl -sf "${ORG_PUBLIC_API}/.well-known/did.json" | jq -r '.id // empty')
+# The did:webvh lives in the log. /.well-known/did.json answers with the did:web
+# alias, and the parent registers its participants under the did:webvh.
+ORG_DID=$(fetch_did_from_log "$ORG_PUBLIC_API")
 if [ -z "$ORG_DID" ]; then
   err "Could not fetch organization-vs DID from $ORG_PUBLIC_API"
   exit 1

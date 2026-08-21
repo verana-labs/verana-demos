@@ -124,9 +124,13 @@ jobs:
         if: inputs.step == 'deploy' || inputs.step == 'all'
         run: |
           ORG_PUBLIC_URL="https://organization-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
-          ORG_DID=$(curl -sf "${ORG_PUBLIC_URL}/.well-known/did.json" | jq -r '.id // empty')
+          # Read the did:webvh from the log. /.well-known/did.json answers with the
+          # did:web alias, and the parent registers its participants under the
+          # did:webvh, so the alias finds none of them.
+          source common/common.sh
+          ORG_DID=$(fetch_did_from_log "$ORG_PUBLIC_URL")
           if [ -z "$ORG_DID" ]; then
-            echo "::error::Could not fetch organization-vs DID from ${ORG_PUBLIC_URL}. Is organization-vs deployed?"
+            echo "::error::Could not fetch organization-vs DID from ${ORG_PUBLIC_URL}/.well-known/did.jsonl. Is organization-vs deployed?"
             exit 1
           fi
           echo "ORG_VS_DID=${ORG_DID}" >> "$GITHUB_ENV"
