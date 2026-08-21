@@ -701,9 +701,14 @@ self_create_participant() {
 
   log "Self-creating participant (role=$role) against validator $validator_participant_id..."
   local raw_output
+  # The chain makes effective_from mandatory on self-create-participant. Give it a
+  # small lead, so the value is still in the future when the block commits.
+  # CAUTION: a participant whose effective_from is null is INACTIVE, and the chain
+  # refuses to revoke it, to adjust it, and to create an entry that overlaps it.
   raw_output=$(veranad tx pp self-create-participant \
     "$role" "$validator_participant_id" "$did" \
     --corporation "$corporation" \
+    --effective-from "$(future_timestamp)" \
     "${vsoa_args[@]}" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
     --fees "$FEES" --gas auto --node "$NODE_RPC" \
