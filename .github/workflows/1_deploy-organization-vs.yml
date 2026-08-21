@@ -233,14 +233,17 @@ jobs:
 
       # The Organization credential comes from the service the ECS Ecosystem
       # corporation assigned the ISSUER entry to, not from the ecosystem agent.
+      # That service belongs to verana-deploy and lives in the chain namespace,
+      # which is not the namespace of these demo services.
       - name: Port-forward ecs-org-issuer admin API
         if: inputs.step == 'validate-ecs-onboarding' || inputs.step == 'all'
         run: |
-          kubectl port-forward -n "$CHART_NAMESPACE" svc/ecs-org-issuer 3101:3000 &
+          ECS_NAMESPACE="${ECS_NAMESPACE:-vna-${NETWORK}-1}"
+          kubectl port-forward -n "$ECS_NAMESPACE" svc/ecs-org-issuer 3101:3000 &
           echo "ECS_PF_PID=$!" >> "$GITHUB_ENV"
           sleep 5
           curl -sf http://localhost:3101/v1/agent > /dev/null || {
-            echo "Port-forward to ecs-org-issuer failed — is it deployed in $CHART_NAMESPACE?"
+            echo "Port-forward to ecs-org-issuer failed — is it deployed in $ECS_NAMESPACE?"
             exit 1
           }
           echo "Port-forward established"

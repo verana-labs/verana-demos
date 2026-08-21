@@ -6,7 +6,7 @@
 # after running the "bootstrap-corporation" workflow step once).
 # Example: vs/devnet-example → __NETWORK__=devnet, __VS_NAME__=example
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v2.0.0-dev.16
+chartVersion: v2.0.0-dev.17
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network

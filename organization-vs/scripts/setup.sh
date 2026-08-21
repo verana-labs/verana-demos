@@ -56,7 +56,7 @@ source "${REPO_ROOT}/common/common.sh"
 # ---------------------------------------------------------------------------
 
 NETWORK="${NETWORK:-devnet}"
-VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:latest}"
+VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.17}"
 VS_AGENT_CONTAINER_NAME="${VS_AGENT_CONTAINER_NAME:-organization-vs}"
 VS_AGENT_ADMIN_PORT="${VS_AGENT_ADMIN_PORT:-3000}"
 VS_AGENT_PUBLIC_PORT="${VS_AGENT_PUBLIC_PORT:-3001}"
