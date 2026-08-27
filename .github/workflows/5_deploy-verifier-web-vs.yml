@@ -8,19 +8,11 @@ on:
         required: true
         type: choice
         options:
-          - bootstrap-corporation
           - deploy
           - onboard-verifier
           - deploy-web
           - all
         default: all
-      corporation-id:
-        description: >-
-          verifier-web-vs's Corporation ID. Leave empty on the first run of
-          "bootstrap-corporation" — it prints the new ID, which you must then
-          set here (and in verifier-web-vs/config.env) for every later run.
-        required: false
-        type: string
 
 jobs:
   deploy-verifier-web-vs:
@@ -60,9 +52,6 @@ jobs:
             key="${line%%=*}"
             echo "${key}=${!key}" >> "$GITHUB_ENV"
           done < <(grep -E '^[A-Z_]+=' verifier-web-vs/config.env)
-          if [ -n "${{ inputs.corporation-id }}" ]; then
-            echo "CORPORATION_ID=${{ inputs.corporation-id }}" >> "$GITHUB_ENV"
-          fi
 
       - name: Set up kubeconfig
         run: |
@@ -78,51 +67,40 @@ jobs:
 
       - name: Install veranad
         run: |
-          VERANAD_VERSION="v0.10.2"
+          VERANAD_VERSION="v0.10.3"
           curl -sfL "https://github.com/verana-labs/verana-node/releases/download/${VERANAD_VERSION}/veranad-linux-amd64" \
             -o /usr/local/bin/veranad
           chmod +x /usr/local/bin/veranad
           veranad version
 
-      - name: Import account from mnemonic
+      # Two accounts. The Corporation operator signs every provisioning transaction and belongs
+      # to organization-vs; the agent account becomes the vs_operator of this service's
+      # Participant entries. [MOD-DE-MSG-5-2] makes the two mutually exclusive for one grantee.
+      - name: Import accounts from mnemonics
         env:
-          OPERATOR_MNEMONIC: ${{ secrets.VS_DEMO_MNEMONIC }}
+          OPERATOR_MNEMONIC: ${{ secrets.ORGANIZATION_VS_MNEMONIC }}
+          AGENT_MNEMONIC: ${{ secrets.VERIFIER_WEB_VS_AGENT_MNEMONIC }}
         run: |
-          if [ -z "$OPERATOR_MNEMONIC" ]; then
-            echo "::error::Repository secret VS_DEMO_MNEMONIC is empty. Set it as a repository secret (Settings -> Secrets and variables -> Actions -> Repository secrets). Environment secrets do not work here, because this job declares no environment."
-            exit 1
-          fi
+          for name in OPERATOR_MNEMONIC AGENT_MNEMONIC; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret for ${name} is empty. Set ORGANIZATION_VS_MNEMONIC and VERIFIER_WEB_VS_AGENT_MNEMONIC as repository secrets."
+              exit 1
+            fi
+          done
           echo "$OPERATOR_MNEMONIC" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
           USER_ACC_ADDR=$(veranad keys show "${{ env.USER_ACC }}" -a --keyring-backend test)
           echo "USER_ACC_ADDR=${USER_ACC_ADDR}" >> "$GITHUB_ENV"
           echo "Corporation operator: ${USER_ACC_ADDR}"
+          echo "$AGENT_MNEMONIC" | veranad keys add "${{ env.AGENT_ACC }}" --recover --keyring-backend test
+          AGENT_ADDR=$(veranad keys show "${{ env.AGENT_ACC }}" -a --keyring-backend test)
+          echo "AGENT_ADDR=${AGENT_ADDR}" >> "$GITHUB_ENV"
+          echo "Agent account (vs_operator): ${AGENT_ADDR}"
 
-      # -----------------------------------------------------------------------
-      # BOOTSTRAP-CORPORATION: create verifier-web-vs's own Corporation
-      # -----------------------------------------------------------------------
-      - name: "Bootstrap Corporation"
-        if: inputs.step == 'bootstrap-corporation' || inputs.step == 'all'
-        run: |
-          source common/common.sh
-          set_network_vars "$NETWORK"
-
-          if [ -n "${CORPORATION_ID:-}" ]; then
-            ok "CORPORATION_ID=$CORPORATION_ID already set — resolving to confirm it exists"
-            resolve_corporation "$CORPORATION_ID"
-            ensure_operator_authorization "$CORPORATION" "$USER_ACC_ADDR" "$OA_MSGS_VERIFIER"
-          else
-            create_corporation "did:example:verifier-web-vs-${CHAIN_ID}" "$EGF_DOC_URL" "" \
-              "$OA_MSGS_VERIFIER"
-            echo "::notice::Corporation created: CORPORATION_ID=$CORPORATION_ID"
-            echo "::notice::Set 'corporation-id: $CORPORATION_ID' as the workflow input (and CORPORATION_ID in verifier-web-vs/config.env) before running 'deploy'."
-          fi
-
-      # -----------------------------------------------------------------------
-      # DEPLOY: Install/upgrade VS Agent via Helm
-      # -----------------------------------------------------------------------
       - name: Resolve organization-vs DID
         if: inputs.step == 'deploy' || inputs.step == 'all'
         run: |
+          source common/common.sh
+          set_network_vars "$NETWORK"
           ORG_PUBLIC_URL="https://organization-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
           # Read the did:webvh from the log. /.well-known/did.json answers with the
           # did:web alias, and the parent registers its participants under the
@@ -136,11 +114,18 @@ jobs:
           echo "ORG_VS_DID=${ORG_DID}" >> "$GITHUB_ENV"
           echo "organization-vs DID: $ORG_DID"
 
+          # A service of this organization joins organization-vs's Corporation. The DID ownership
+          # invariant of the VPR binds each DID to one Corporation, and one Corporation may own
+          # any number of DIDs, so a Corporation per service is neither needed nor correct.
+          resolve_corporation_for_did "$ORG_DID"
+          echo "CORPORATION_ID=${CORPORATION_ID}" >> "$GITHUB_ENV"
+          echo "Corporation: ${CORPORATION_ID}"
+
       - name: Resolve deployment.yaml placeholders
         if: inputs.step == 'deploy' || inputs.step == 'all'
         run: |
           if [ -z "${CORPORATION_ID:-}" ]; then
-            echo "::error::CORPORATION_ID is not set. Run 'bootstrap-corporation' first."
+            echo "::error::CORPORATION_ID is not set; the 'deploy' step resolves it from organization-vs."
             exit 1
           fi
           CHILD_VS_NAME="verifier-web-${VS_NAME}"
@@ -171,7 +156,7 @@ jobs:
           kubectl create namespace "$CHART_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n "$CHART_NAMESPACE" get secret verifier-web-vs-secrets > /dev/null 2>&1 || \
           kubectl -n "$CHART_NAMESPACE" create secret generic verifier-web-vs-secrets \
-            --from-literal=VERIFIER_WEB_VS_MNEMONIC="${{ secrets.VS_DEMO_MNEMONIC }}"
+            --from-literal=VERIFIER_WEB_VS_AGENT_MNEMONIC="${{ secrets.VERIFIER_WEB_VS_AGENT_MNEMONIC }}"
 
       - name: Deploy VS Agent via Helm
         if: inputs.step == 'deploy' || inputs.step == 'all'
@@ -199,11 +184,74 @@ jobs:
             exit 1
           }
 
+      # The agent holds only a VSOperatorAuthorization, so it cannot submit StartParticipantOP
+      # itself; the Corporation operator provisions its Service HOLDER entry, and the agent then
+      # reacts to the chain event and sends the onboarding request ([VSA-VTI-FLOW-OP-NEW]).
+      - name: Provision the Service HOLDER entry
+        if: inputs.step == 'onboard-verifier' || inputs.step == 'all'
+        run: |
+          source common/common.sh
+          set_network_vars "$NETWORK"
+          resolve_corporation "$CORPORATION_ID"
+
+          CHILD_PUBLIC_URL="https://verifier-web-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
+          CHILD_DID=$(fetch_did_from_log "$CHILD_PUBLIC_URL")
+          ECS_SERVICE_SCHEMA_ID=$(find_ecs_schema_id "$ECS_ECOSYSTEM_DID" "ServiceCredential")
+
+          if find_participant_with_vs_operator "$ECS_SERVICE_SCHEMA_ID" "$PP_ROLE_HOLDER" "$CHILD_DID" \
+               | grep -q "$AGENT_ADDR"; then
+            ok "Service HOLDER entry already names $AGENT_ADDR"
+          else
+            ORG_SERVICE_ISSUER_ID=$(find_active_participant \
+              "$ECS_SERVICE_SCHEMA_ID" "$PP_IDX_ROLE_ISSUER" "$ORG_VS_DID")
+            if [ -z "$ORG_SERVICE_ISSUER_ID" ]; then
+              echo "::error::organization-vs holds no active Service ISSUER entry"
+              exit 1
+            fi
+            # HOLDER is the one role whose vs_operator may send TriggerResolver.
+            start_participant_op "$CORPORATION" "$PP_ROLE_HOLDER" "$ORG_SERVICE_ISSUER_ID" \
+              "$CHILD_DID" "$AGENT_ADDR" "$VSOA_HOLDER" > /dev/null
+          fi
+
+      # The delegated Service credential comes from a HOLDER onboarding process against the
+      # parent's Service ISSUER ([VSA-VTI-FLOW-OP-NEW]). The agent starts it on its own at boot;
+      # the validator supplies the claims and validates, as it does for every onboarding process.
+      - name: Validate the Service credential onboarding on organization-vs
+        if: inputs.step == 'onboard-verifier' || inputs.step == 'all'
+        run: |
+          source common/common.sh
+          set_network_vars "$NETWORK"
+
+          CHILD_PUBLIC_URL="https://verifier-web-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
+          CHILD_DID=$(fetch_did_from_log "$CHILD_PUBLIC_URL")
+          if [ -z "$CHILD_DID" ]; then
+            echo "::error::Could not read the DID of $CHILD_PUBLIC_URL"
+            exit 1
+          fi
+
+          SERVICE_CLAIMS=$(build_service_claims \
+            "$CHILD_PUBLIC_URL" "$SERVICE_NAME" "$SERVICE_TYPE" "$SERVICE_DESCRIPTION" \
+            "${SERVICE_LOGO_URI:-https://verana.io/logo.svg}")
+
+          # The agent needs a moment to react to its own StartParticipantOP and send the request.
+          for _ in $(seq 1 12); do
+            if curl -sf "http://localhost:3000/v1/vt/flows?role=validator&flowState=AWAITING_OR" \
+                 | jq -e --arg did "$CHILD_DID" 'any(.[]; (.peerDID // .peerDid) == $did)' > /dev/null 2>&1; then
+              break
+            fi
+            sleep 10
+          done
+
+          if ! validate_pending_flow "http://localhost:3000" "$CHILD_DID" "" "$SERVICE_CLAIMS"; then
+            echo "::error::Could not validate the Service credential onboarding for $CHILD_DID"
+            exit 1
+          fi
+
       - name: Self-create VERIFIER on organization-vs's example schema
         if: inputs.step == 'onboard-verifier' || inputs.step == 'all'
         run: |
           if [ -z "${CORPORATION_ID:-}" ]; then
-            echo "::error::CORPORATION_ID is not set. Run 'bootstrap-corporation' first."
+            echo "::error::CORPORATION_ID is not set; the 'deploy' step resolves it from organization-vs."
             exit 1
           fi
           source common/common.sh
@@ -229,7 +277,8 @@ jobs:
               echo "::error::Could not find the root participant for schema $CUSTOM_SCHEMA_ID"
               exit 1
             fi
-            VERIFIER_PARTICIPANT_ID=$(self_create_participant "$CORPORATION" "$PP_ROLE_VERIFIER" "$ROOT_PARTICIPANT_ID" "$CHILD_DID")
+            VERIFIER_PARTICIPANT_ID=$(self_create_participant "$CORPORATION" "$PP_ROLE_VERIFIER" \
+              "$ROOT_PARTICIPANT_ID" "$CHILD_DID" "$AGENT_ADDR" "$VSOA_VERIFIER")
             ok "VERIFIER participant created: $VERIFIER_PARTICIPANT_ID"
           fi
 

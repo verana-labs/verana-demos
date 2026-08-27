@@ -41,7 +41,7 @@ source "${REPO_ROOT}/common/common.sh"
 # ---------------------------------------------------------------------------
 
 NETWORK="${NETWORK:-devnet}"
-VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.17}"
+VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.27}"
 VS_AGENT_CONTAINER_NAME="${VS_AGENT_CONTAINER_NAME:-verifier-web-vs}"
 VS_AGENT_ADMIN_PORT="${VS_AGENT_ADMIN_PORT:-3008}"
 VS_AGENT_PUBLIC_PORT="${VS_AGENT_PUBLIC_PORT:-3009}"
@@ -65,7 +65,7 @@ ISSUER_VS_PUBLIC_URL="${ISSUER_VS_PUBLIC_URL:-http://localhost:3005}"
 
 if ! command -v veranad &> /dev/null; then
   log "veranad not found — downloading..."
-  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.2}"
+  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.3}"
   PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
   case "$ARCH" in

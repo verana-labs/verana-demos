@@ -4,7 +4,7 @@
 # substitutes __NETWORK__, __VS_NAME__, __CHILD_VS_NAME__, __CORPORATION_ID__
 # and __ORG_VS_DID__ placeholders at deploy time.
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v2.0.0-dev.17
+chartVersion: v2.0.0-dev.27
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
@@ -53,7 +53,7 @@ extraEnv:
     valueFrom:
       secretKeyRef:
         name: verifier-web-vs-secrets
-        key: VERIFIER_WEB_VS_MNEMONIC
+        key: VERIFIER_WEB_VS_AGENT_MNEMONIC
   # Set by scripts/setup.sh's "bootstrap-corporation" step.
   - name: VERANA_CORPORATION_ID
     value: "__CORPORATION_ID__"

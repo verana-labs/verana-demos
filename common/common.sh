@@ -99,8 +99,13 @@ readonly VSOA_HOLDER="/verana.pp.v1.MsgTriggerResolver"
 # MsgCreateOrUpdateParticipantSession is deliberately absent: the chain refuses
 # it in a blanket grant, and delegates it per participant through the VSOA.
 readonly OA_MSGS_ECOSYSTEM='["/verana.ec.v1.MsgCreateEcosystem","/verana.ec.v1.MsgUpdateEcosystem","/verana.ec.v1.MsgArchiveEcosystem","/verana.cs.v1.MsgCreateCredentialSchema","/verana.pp.v1.MsgCreateRootParticipant","/verana.pp.v1.MsgStartParticipantOP","/verana.pp.v1.MsgSetParticipantOPToValidated","/verana.pp.v1.MsgRenewParticipantOP","/verana.pp.v1.MsgCancelParticipantOPLastRequest","/verana.pp.v1.MsgSelfCreateParticipant","/verana.pp.v1.MsgRevokeParticipant","/verana.pp.v1.MsgTriggerResolver"]'
-readonly OA_MSGS_ISSUER='["/verana.pp.v1.MsgStartParticipantOP","/verana.pp.v1.MsgRenewParticipantOP","/verana.pp.v1.MsgCancelParticipantOPLastRequest"]'
-readonly OA_MSGS_VERIFIER='["/verana.pp.v1.MsgSelfCreateParticipant"]'
+
+# Used only by the local <service>/scripts/setup.sh path, which still gives each demo service
+# its own Corporation. The GitHub workflows no longer do that: a service joins organization-vs's
+# Corporation, because the DID ownership invariant binds a DID to one Corporation and lets one
+# Corporation own many DIDs. Port the local scripts the same way, then delete these.
+readonly OA_MSGS_ISSUER='["/verana.pp.v1.MsgStartParticipantOP","/verana.pp.v1.MsgRenewParticipantOP","/verana.pp.v1.MsgCancelParticipantOPLastRequest","/verana.pp.v1.MsgTriggerResolver"]'
+readonly OA_MSGS_VERIFIER='["/verana.pp.v1.MsgSelfCreateParticipant","/verana.pp.v1.MsgStartParticipantOP","/verana.pp.v1.MsgRenewParticipantOP","/verana.pp.v1.MsgCancelParticipantOPLastRequest","/verana.pp.v1.MsgTriggerResolver"]'
 
 # ---------------------------------------------------------------------------
 # Transaction helpers
@@ -504,13 +509,26 @@ resolve_corporation() {
 ensure_operator_authorization() {
   require_user_acc_addr || return 1
   local corporation=$1
-  local grantee=$2
+  # The caller usually passes $USER_ACC_ADDR, which is empty when the keyring was imported
+  # directly, as CI does. require_user_acc_addr has just derived it, so fall back to it.
+  local grantee="${2:-$USER_ACC_ADDR}"
   local required=$3
+
+  # An authorization is per corporation, and one account may operate several. Resolve the id
+  # of this corporation from its policy address, so the check never unions the grants of
+  # another corporation and then reports this one as complete.
+  local corporation_id
+  corporation_id=$(veranad query co list-corporations --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -r --arg addr "$corporation" '(.corporations // [])[] | select(.policy_address == $addr) | .id' | head -1)
+  if [ -z "$corporation_id" ]; then
+    err "Could not resolve a corporation id for policy address $corporation"
+    return 1
+  fi
 
   local granted
   granted=$(veranad query de list-operator-authorizations --node "$NODE_RPC" --output json 2>/dev/null \
-    | jq -c --arg g "$grantee" '[(.operator_authorizations // [])[]
-        | select(.operator == $g and (.revoked // null) == null)
+    | jq -c --arg g "$grantee" --arg c "$corporation_id" '[(.operator_authorizations // [])[]
+        | select(.operator == $g and (.corporation_id|tostring) == $c and (.revoked // null) == null)
         | .msg_types[]] | unique') || granted='[]'
   [ -n "$granted" ] || granted='[]'
 
@@ -968,6 +986,63 @@ sri_digest_sha384() {
 # the offered credential conforms to the schema instead of being rejected as
 # empty. Omit it only for schemas that carry no subject claims of their own.
 # Usage: validate_pending_flow <admin_api> <peer_did> [schema_id] [claims_json]
+# Resolve the Corporation that owns a DID, and set CORPORATION_ID and CORPORATION.
+#
+# The DID ownership invariant of the VPR gives every DID a single owning Corporation, so any
+# active Participant entry that carries the DID names it. Services of one organization share
+# that Corporation; they do not each need one.
+# Usage: resolve_corporation_for_did <did>
+resolve_corporation_for_did() {
+  local did=$1
+  local corp_id
+  # Filter on the node: an unfiltered list is paged, and it answers with the oldest entries.
+  corp_id=$(veranad query pp list-participants --did "$did" --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -r 'first((.participants // [])[]
+        | select(.revoked == null and .slashed == null)
+        | .corporation_id) // empty')
+  if [ -z "$corp_id" ]; then
+    err "No active Participant carries $did, so its Corporation cannot be resolved"
+    return 1
+  fi
+  CORPORATION_ID="$corp_id"
+  export CORPORATION_ID
+  resolve_corporation "$CORPORATION_ID"
+}
+
+# Build the claims of an ECS Service credential for a delegated service.
+#
+# In a delegated onboarding the applicant sends no claims: the validator supplies them, as it
+# does for every other onboarding process. The agent serves its own terms, privacy policy and
+# logo, so the digests come from the agent that will hold the credential.
+# Usage: build_service_claims <public_url> <name> <type> <description> [logo_uri]
+build_service_claims() {
+  local public_url="${1%/}"
+  local name=$2
+  local type=$3
+  local description=$4
+  local logo_uri="${5:-${public_url}/vt/default/logo.svg}"
+
+  local terms_uri="${public_url}/vt/default/terms.html"
+  local privacy_uri="${public_url}/vt/default/privacy.html"
+
+  local logo_digest terms_digest privacy_digest
+  logo_digest=$(compute_sri_digest "$logo_uri") || return 1
+  terms_digest=$(compute_sri_digest "$terms_uri") || return 1
+  privacy_digest=$(compute_sri_digest "$privacy_uri") || return 1
+
+  jq -c -n \
+    --arg name "$name" --arg type "$type" --arg description "$description" \
+    --arg logoUri "$logo_uri" --arg logoDigestSri "$logo_digest" \
+    --arg termsUri "$terms_uri" --arg termsDigestSri "$terms_digest" \
+    --arg privacyUri "$privacy_uri" --arg privacyDigestSri "$privacy_digest" \
+    --argjson minimumAgeRequired "${SERVICE_MINIMUM_AGE:-18}" \
+    '{name: $name, type: $type, description: $description,
+      logoUri: $logoUri, logoDigestSri: $logoDigestSri,
+      minimumAgeRequired: $minimumAgeRequired,
+      termsAndConditionsUri: $termsUri, termsAndConditionsDigestSri: $termsDigestSri,
+      privacyPolicyUri: $privacyUri, privacyPolicyDigestSri: $privacyDigestSri}'
+}
+
 validate_pending_flow() {
   local admin_api=$1
   local peer_did=$2
