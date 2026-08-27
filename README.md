@@ -111,11 +111,11 @@ MNEMONIC="..." AGENT_MNEMONIC="..." ./organization-vs/scripts/setup.sh
 
 ```bash
 source issuer-chatbot-vs/config.env
-MNEMONIC="..." ./issuer-chatbot-vs/scripts/setup.sh
+MNEMONIC="..." AGENT_MNEMONIC="..." ./issuer-chatbot-vs/scripts/setup.sh
 ./issuer-chatbot-vs/scripts/start.sh
 ```
 
-> The local `scripts/setup.sh` of each child still creates a Corporation per service, which the GitHub workflows no longer do. Port it to the shared Corporation before relying on it.
+`MNEMONIC` is organization-vs's Corporation operator, the same account the workflow signs with; `AGENT_MNEMONIC` is this service's own agent account. Each `scripts/setup.sh` performs the same steps as its workflow, against the same shared Corporation, so a local run and a CI run produce the same on-chain state.
 
 > **Note:** Only one ngrok tunnel can run at a time on the free plan. For local development with multiple services, deploy organization-vs to K8s first, then point child services to its public URL via `ORG_VS_PUBLIC_URL` and `ORG_VS_ADMIN_URL`.
 

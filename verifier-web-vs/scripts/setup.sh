@@ -19,11 +19,12 @@
 #
 # Prerequisites:
 #   - Docker, ngrok (authenticated), curl, jq, veranad
-#   - MNEMONIC (or VERIFIER_WEB_VS_MNEMONIC) env var — a funded devnet account
+#   - MNEMONIC — organization-vs's Corporation operator (signs the provisioning)
+#   - AGENT_MNEMONIC (or VERIFIER_WEB_VS_AGENT_MNEMONIC) — this service's own agent account
 #
 # Usage:
 #   source verifier-web-vs/config.env
-#   MNEMONIC="..." ./verifier-web-vs/scripts/setup.sh
+#   MNEMONIC="..." AGENT_MNEMONIC="..." ./verifier-web-vs/scripts/setup.sh
 #
 # =============================================================================
 
@@ -49,7 +50,8 @@ VS_AGENT_DATA_DIR="${VS_AGENT_DATA_DIR:-${SERVICE_DIR}/data}"
 SERVICE_NAME="${SERVICE_NAME:-Example Web Verifier}"
 USER_ACC="${USER_ACC:-verifier-web-vs-devnet-admin}"
 OUTPUT_FILE="${OUTPUT_FILE:-${SERVICE_DIR}/ids.env}"
-MNEMONIC="${MNEMONIC:-${VERIFIER_WEB_VS_MNEMONIC:-}}"
+MNEMONIC="${MNEMONIC:-${ORGANIZATION_VS_MNEMONIC:-}}"
+AGENT_MNEMONIC="${AGENT_MNEMONIC:-${VERIFIER_WEB_VS_AGENT_MNEMONIC:-}}"
 
 ORG_VS_ADMIN_URL="${ORG_VS_ADMIN_URL:-http://localhost:3000}"
 ORG_VS_PUBLIC_URL="${ORG_VS_PUBLIC_URL:-}"
@@ -103,36 +105,49 @@ fi
 ok "organization-vs DID: $ORG_DID"
 
 # =============================================================================
-# STEP 1: Set up veranad CLI account (also the agent's own on-chain identity)
+# STEP 1: Import the two accounts the workflow uses
 # =============================================================================
+#
+# The Corporation operator belongs to organization-vs and signs every provisioning
+# transaction. The agent account is this service's own, and becomes the vs_operator of
+# its Participant entries. [MOD-DE-MSG-5-2] makes the two mutually exclusive for one
+# grantee, so they MUST be different accounts.
 
-log "Step 1: Set up veranad CLI account"
+log "Step 1: Import accounts"
 
-if [ -n "$MNEMONIC" ]; then
+if [ -n "${MNEMONIC:-}" ]; then
   echo "$MNEMONIC" | veranad keys add "$USER_ACC" --recover --keyring-backend test 2>/dev/null || true
-  ok "Mnemonic imported for account '$USER_ACC'"
-elif ! veranad keys show "$USER_ACC" --keyring-backend test > /dev/null 2>&1; then
+fi
+if ! veranad keys show "$USER_ACC" --keyring-backend test > /dev/null 2>&1; then
   err "No MNEMONIC provided and account '$USER_ACC' does not exist."
-  err "Export MNEMONIC (or VERIFIER_WEB_VS_MNEMONIC) with a funded devnet account and re-run."
+  err "Export MNEMONIC with organization-vs's Corporation operator mnemonic and re-run."
   exit 1
 fi
-setup_veranad_account "$USER_ACC" "$FAUCET_URL"
+require_user_acc_addr || exit 1
+ok "Corporation operator: $USER_ACC_ADDR"
+
+if [ -n "${AGENT_MNEMONIC:-}" ]; then
+  echo "$AGENT_MNEMONIC" | veranad keys add "$AGENT_ACC" --recover --keyring-backend test 2>/dev/null || true
+fi
+if ! veranad keys show "$AGENT_ACC" --keyring-backend test > /dev/null 2>&1; then
+  err "No AGENT_MNEMONIC provided and account '$AGENT_ACC' does not exist."
+  err "Export AGENT_MNEMONIC with this service's own agent mnemonic and re-run."
+  exit 1
+fi
+AGENT_ADDR=$(veranad keys show "$AGENT_ACC" -a --keyring-backend test)
+ok "Agent account (vs_operator): $AGENT_ADDR"
 
 # =============================================================================
-# STEP 2: Create Corporation (skipped if CORPORATION_ID already set)
+# STEP 2: Join organization-vs's Corporation
 # =============================================================================
+#
+# The DID ownership invariant binds each DID to a single Corporation and lets one
+# Corporation own many DIDs, so this service does not create one of its own.
 
 log "Step 2: Corporation"
 
-if [ -n "${CORPORATION_ID:-}" ]; then
-  ok "Using existing CORPORATION_ID=$CORPORATION_ID"
-  resolve_corporation "$CORPORATION_ID"
-  ensure_operator_authorization "$CORPORATION" "$USER_ACC_ADDR" "$OA_MSGS_VERIFIER"
-else
-  create_corporation "did:example:verifier-web-vs-${CHAIN_ID}" "$EGF_DOC_URL" "" \
-    "$OA_MSGS_VERIFIER"
-  ok "Corporation created: CORPORATION_ID=$CORPORATION_ID — add this to verifier-web-vs/config.env to skip next time"
-fi
+resolve_corporation_for_did "$ORG_DID" || exit 1
+ok "Joining Corporation $CORPORATION_ID"
 
 # =============================================================================
 # STEP 3: Deploy VS Agent, bound to the Corporation, delegated to organization-vs
@@ -207,15 +222,44 @@ if [ -z "$AGENT_DID" ] || [ "$AGENT_DID" = "null" ]; then
 fi
 ok "Agent DID: $AGENT_DID"
 
-log "Waiting for the delegated Service credential to be obtained (up to 30s)..."
-sleep 20
-ok "Check: ${NGROK_URL}/.well-known/did.json"
+log "Step 4: Service credential (delegated onboarding process)"
+
+# The agent holds only a VSOperatorAuthorization, so it cannot submit StartParticipantOP
+# itself; the Corporation operator provisions its Service HOLDER entry, the agent reacts
+# to that chain event and sends the onboarding request ([VSA-VTI-FLOW-OP-NEW]).
+ECS_SERVICE_SCHEMA_ID=$(find_ecs_schema_id "$ECS_ECOSYSTEM_DID" "ServiceCredential")
+
+if find_participant_with_vs_operator "$ECS_SERVICE_SCHEMA_ID" "$PP_ROLE_HOLDER" "$AGENT_DID" \
+     | grep -q "$AGENT_ADDR"; then
+  ok "Service HOLDER entry already names $AGENT_ADDR"
+else
+  ORG_SERVICE_ISSUER_ID=$(find_active_participant \
+    "$ECS_SERVICE_SCHEMA_ID" "$PP_IDX_ROLE_ISSUER" "$ORG_DID") || {
+    err "organization-vs holds no active Service ISSUER entry"
+    exit 1
+  }
+  # HOLDER is the one role whose vs_operator may send TriggerResolver.
+  start_participant_op "$CORPORATION" "$PP_ROLE_HOLDER" "$ORG_SERVICE_ISSUER_ID" \
+    "$AGENT_DID" "$AGENT_ADDR" "$VSOA_HOLDER" > /dev/null
+
+  # The validator supplies the claims, as it does for every onboarding process.
+  SERVICE_CLAIMS=$(build_service_claims \
+    "$NGROK_URL" "$SERVICE_NAME" "$SERVICE_TYPE" "$SERVICE_DESCRIPTION" \
+    "${SERVICE_LOGO_URI:-https://verana.io/logo.svg}")
+
+  log "Waiting for the agent to send its onboarding request..."
+  sleep 20
+  validate_pending_flow "$ORG_VS_ADMIN_URL" "$AGENT_DID" "" "$SERVICE_CLAIMS" || {
+    err "Could not validate the Service credential onboarding"
+    exit 1
+  }
+fi
 
 # =============================================================================
-# STEP 4: Discover organization-vs's "example" schema and self-create VERIFIER
+# STEP 5: Take the VERIFIER role on organization-vs's "example" schema
 # =============================================================================
 
-log "Step 4: Self-create VERIFIER participant for organization-vs's 'example' schema"
+log "Step 5: Obtain VERIFIER participant for the 'example' schema"
 
 CUSTOM_SCHEMA_ID=$(discover_custom_schema_id "${ORG_PUBLIC_API}/.well-known/did.json") || {
   err "Could not discover the 'example' schema from organization-vs's DID document"
@@ -225,18 +269,19 @@ ok "Organization-vs custom schema ID: $CUSTOM_SCHEMA_ID"
 
 if EXISTING_PARTICIPANT_ID=$(find_active_participant "$CUSTOM_SCHEMA_ID" "$PP_IDX_ROLE_VERIFIER" "$AGENT_DID"); then
   ok "Active VERIFIER participant already exists: $EXISTING_PARTICIPANT_ID — skipping"
-  VERIFIER_PARTICIPANT_ID="$EXISTING_PARTICIPANT_ID"
 else
   ROOT_PARTICIPANT_ID=$(find_root_participant "$CUSTOM_SCHEMA_ID") || {
     err "Could not find the root participant for schema $CUSTOM_SCHEMA_ID"
     exit 1
   }
-  VERIFIER_PARTICIPANT_ID=$(self_create_participant "$CORPORATION" "$PP_ROLE_VERIFIER" "$ROOT_PARTICIPANT_ID" "$AGENT_DID")
-  ok "VERIFIER participant created: $VERIFIER_PARTICIPANT_ID"
+  # VERIFIER onboarding is OPEN: one transaction, no handshake, no validation.
+  VERIFIER_PARTICIPANT_ID=$(self_create_participant "$CORPORATION" "$PP_ROLE_VERIFIER" \
+    "$ROOT_PARTICIPANT_ID" "$AGENT_DID" "$AGENT_ADDR" "$VSOA_VERIFIER")
+  ok "VERIFIER participant: $VERIFIER_PARTICIPANT_ID"
 fi
 
 # =============================================================================
-# STEP 5: Discover AnonCreds credential definition from issuer-web-vs
+# STEP 6: Discover AnonCreds credential definition from issuer-web-vs
 # =============================================================================
 
 log "Step 5: Discovering AnonCreds credential definition from issuer-web-vs..."
