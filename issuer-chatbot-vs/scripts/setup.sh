@@ -43,7 +43,7 @@ source "${REPO_ROOT}/common/common.sh"
 # ---------------------------------------------------------------------------
 
 NETWORK="${NETWORK:-devnet}"
-VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.27}"
+VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.53}"
 VS_AGENT_CONTAINER_NAME="${VS_AGENT_CONTAINER_NAME:-issuer-chatbot-vs}"
 VS_AGENT_ADMIN_PORT="${VS_AGENT_ADMIN_PORT:-3002}"
 VS_AGENT_PUBLIC_PORT="${VS_AGENT_PUBLIC_PORT:-3003}"
@@ -72,7 +72,7 @@ ANONCREDS_SUPPORT_REVOCATION="${ANONCREDS_SUPPORT_REVOCATION:-false}"
 
 if ! command -v veranad &> /dev/null; then
   log "veranad not found — downloading..."
-  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.3}"
+  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.4}"
   PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
   case "$ARCH" in
@@ -194,10 +194,11 @@ docker run --platform linux/amd64 -d \
   -p "${VS_AGENT_PUBLIC_PORT}:3001" \
   -p "${VS_AGENT_ADMIN_PORT}:3000" \
   -v "${VS_AGENT_DATA_DIR}:/root/.afj" \
-  -e "AGENT_PUBLIC_DID=did:webvh:${NGROK_DOMAIN}" \
+  -e "PUBLIC_API_BASE_URL=${NGROK_URL}" \
+  -e "AGENT_PUBLIC_DID_METHOD=webvh" \
   -e "AGENT_LABEL=${SERVICE_NAME}" \
   -e "ENABLE_PUBLIC_API_SWAGGER=true" \
-  -e "EVENTS_BASE_URL=http://host.docker.internal:${CHATBOT_PORT}" \
+  -e "EVENTS_WEBHOOK_URL=http://host.docker.internal:${CHATBOT_PORT}/events" \
   -e "VERANA_RPC_ENDPOINT_URL=${NODE_RPC}" \
   -e "VERANA_INDEXER_BASE_URL=${INDEXER_URL}" \
   -e "VERANA_CHAIN_ID=${CHAIN_ID}" \
@@ -205,8 +206,13 @@ docker run --platform linux/amd64 -d \
   -e "VERANA_CORPORATION_ID=${CORPORATION_ID}" \
   -e "AGENT_MODE=delegated" \
   -e "AGENT_DELEGATED_PARENT_VS_DID=${ORG_DID}" \
-  -e "SELF_ISSUED_VTC_SERVICE_TYPE=${SERVICE_TYPE}" \
-  -e "SELF_ISSUED_VTC_SERVICE_DESCRIPTION=${SERVICE_DESCRIPTION}" \
+  -e "ECS_CLAIMS_SERVICE_NAME=${SERVICE_NAME}" \
+  -e "ECS_CLAIMS_SERVICE_TYPE=${SERVICE_TYPE}" \
+  -e "ECS_CLAIMS_SERVICE_DESCRIPTION=${SERVICE_DESCRIPTION}" \
+  -e "ECS_CLAIMS_SERVICE_LOGO_URI=${SERVICE_LOGO_URI:-https://verana.io/logo.svg}" \
+  -e "ECS_CLAIMS_SERVICE_MINIMUM_AGE_REQUIRED=18" \
+  -e "ECS_CLAIMS_SERVICE_TERMS_AND_CONDITIONS_URI=${NGROK_URL}/vt/default/terms.html" \
+  -e "ECS_CLAIMS_SERVICE_PRIVACY_POLICY_URI=${NGROK_URL}/vt/default/privacy.html" \
   --name "$VS_AGENT_CONTAINER_NAME" \
   "$VS_AGENT_IMAGE"
 
@@ -248,14 +254,12 @@ else
   start_participant_op "$CORPORATION" "$PP_ROLE_HOLDER" "$ORG_SERVICE_ISSUER_ID" \
     "$AGENT_DID" "$AGENT_ADDR" "$VSOA_HOLDER" > /dev/null
 
-  # The validator supplies the claims, as it does for every onboarding process.
-  SERVICE_CLAIMS=$(build_service_claims \
-    "$NGROK_URL" "$SERVICE_NAME" "$SERVICE_TYPE" "$SERVICE_DESCRIPTION" \
-    "${SERVICE_LOGO_URI:-https://verana.io/logo.svg}")
+  # The applicant sends its own Service claims from its ECS_CLAIMS_SERVICE_*
+  # variables, so this side only validates the request.
 
   log "Waiting for the agent to send its onboarding request..."
   sleep 20
-  validate_pending_flow "$ORG_VS_ADMIN_URL" "$AGENT_DID" "" "$SERVICE_CLAIMS" || {
+  validate_pending_flow "$ORG_VS_ADMIN_URL" "$AGENT_DID" || {
     err "Could not validate the Service credential onboarding"
     exit 1
   }

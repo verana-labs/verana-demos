@@ -20,9 +20,13 @@ ecs-ecosystem            ← Shared ECS authority (verana-deploy, not this repo)
 
 **The agent reacts to chain events.** Scripts no longer drive credential issuance through the admin API. They create the on-chain objects and the Participant entries; the agent notices, publishes its VTJSCs, self-issues what it may, and answers the onboarding processes.
 
+**Each agent composes its own ECS claims.** The `ECS_CLAIMS_*` variables of a container hold the claims of the credentials that agent will carry ([VSA-VTI-CFG-ENV-ECS]), and the agent sends them on the onboarding request it opens. A validator signs what it receives, so no script builds a claim set any more. A standalone agent reads the organization, persona and service groups; a delegated agent reads only the service group. The agent derives every `*DigestSri` claim from the matching `*Uri` claim, so each URI must be reachable.
+
 **organization-vs** plays two roles:
 
 - a participant of the shared **ecs-ecosystem**, from which it obtains its own Organization and Service credentials. Its Organization credential comes from `ecs-org-issuer`, a third-party issuer — an Ecosystem agent cannot issue its own Ecosystem's credentials, because the chain grants the ECOSYSTEM role no `VSOperatorAuthorization`.
+
+  Its two credentials carry different names on purpose. The Organization credential names the legal entity, "Verana Example Organization". The Service credential names the service, "Verana Example Ecosystem", and that is the name an explorer shows for the Ecosystem this agent controls.
 - the controller of its own **"example"** Ecosystem and credential schema, which the child services onboard against.
 
 **Child services** run in `AGENT_MODE=delegated` against organization-vs. Delegated mode uses the onboarding process (`[VSA-VTI-FLOW-OP-NEW]`), not Direct Issuance, because the ECS Service schema sets `holder_onboarding_mode = ISSUER_ONBOARDING_PROCESS`. The agent holds only a `VSOperatorAuthorization`, so it cannot submit `StartParticipantOP` itself: the workflow provisions its Service HOLDER entry, the agent reacts to that chain event and sends the onboarding request, and organization-vs supplies the claims and validates. They then take their role on the "example" schema:
@@ -94,6 +98,8 @@ The `onboard-*` step of a child does three things in order: it provisions the Se
 - `<did-domain>` — VS Agent public endpoint (DID document, DIDComm, resources)
 - `app.<did-domain>` — Web/chatbot application (child services)
 - `playground.<vsname>.demos.<network>.verana.network` — Playground
+
+No service publishes an admin ingress. The agent classifies every Admin API request on the peer address of its TCP connection and never reads a forwarding header, so an ingress-forwarded request is external and `ADMIN_API_AUTH_MODE=internal` answers it with HTTP 403. The chatbot applications reach the Admin API over the cluster Service, which is why `adminApiTrustedNetworks` names the pod CIDR; the ingress controller runs inside that same CIDR, so publishing an admin ingress would serve the Admin API to the internet without authentication. Use `kubectl port-forward`, which arrives on 127.0.0.1.
 
 ## Local Development
 

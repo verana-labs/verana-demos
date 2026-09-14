@@ -6,7 +6,9 @@
 # after running the "bootstrap-corporation" workflow step once).
 # Example: vs/devnet-example → __NETWORK__=devnet, __VS_NAME__=example
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v2.0.0-dev.27
+# TEMPORARY: a build of vs-agent#703, matching the ECS services on devnet.
+# Move back to a dev release once that PR merges.
+chartVersion: v2.0.0-pr703.3
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
@@ -16,10 +18,34 @@ replicas: 1
 
 adminPort: 3000
 didcommPort: 3001
-eventsBaseUrl: "https://organization-vs.__VS_NAME__.demos.__NETWORK__.verana.network"
 didcommInvitationImageUrl: "https://verana.io/logo.svg"
 publicDidMethod: "webvh"
 enablePublicApiSwagger: true
+
+# The agent classifies every Admin API request on the peer address of its TCP
+# connection, and it never reads a forwarding header. A kubectl port-forward
+# arrives on 127.0.0.1, so the setup script and the workflow are always
+# trusted. The cluster pod CIDR is added for the chatbot applications, which
+# reach this admin API through the cluster Service.
+#
+# This is also why the deployment publishes no admin ingress: the ingress
+# controller runs inside the same pod CIDR, so an admin ingress on the admin
+# port would serve the internet without authentication.
+adminApiAuthMode: "internal"
+adminApiTrustedNetworks: "127.0.0.0/8,::1/128,10.2.0.0/16"
+
+# Verana network
+veranaRpcEndpointUrl: "https://rpc.__NETWORK__.verana.network"
+veranaIndexerBaseUrl: "https://idx.__NETWORK__.verana.network"
+veranaChainId: "vna-__NETWORK__-1"
+# Set by scripts/setup.sh's "bootstrap-corporation" step (corporation_id
+# printed after granting operator authorization to this agent's own account).
+veranaCorporationId: "__CORPORATION_ID__"
+
+agentMode: "standalone"
+# The shared ECS Ecosystem this service joins to obtain its own ECS
+# credentials — see verana-deploy/scripts/ecs-ecosystem (devnet only).
+trustedEcsEcosystemDids: "did:webvh:QmbDoPbwb4Nu2VLm2oSEUrnMokAzr5fCPu4c13Ysmov6SH:ecs-ecosystem.devnet.verana.network"
 
 resources:
   requests:
@@ -45,12 +71,6 @@ extraEnv:
     value: "3"
   - name: USE_CORS
     value: "true"
-  - name: VERANA_RPC_ENDPOINT_URL
-    value: "https://rpc.__NETWORK__.verana.network"
-  - name: VERANA_INDEXER_BASE_URL
-    value: "https://idx.__NETWORK__.verana.network"
-  - name: VERANA_CHAIN_ID
-    value: "vna-__NETWORK__-1"
   # This agent's ONLY account. It is the vs_operator of the Participant entries
   # the workflow assigns to this DID, and it holds no OperatorAuthorization.
   # ORGANIZATION_VS_MNEMONIC stays with the workflow, which is the Corporation
@@ -61,32 +81,42 @@ extraEnv:
       secretKeyRef:
         name: organization-vs-secrets
         key: ORGANIZATION_VS_AGENT_MNEMONIC
-  # Set by scripts/setup.sh's "bootstrap-corporation" step (corporation_id
-  # printed after granting operator authorization to this agent's own account).
-  - name: VERANA_CORPORATION_ID
-    value: "__CORPORATION_ID__"
-  - name: AGENT_MODE
-    value: "standalone"
-  # The shared ECS Ecosystem this service joins to obtain its own ECS
-  # credentials — see verana-deploy/scripts/ecs-ecosystem (devnet only).
-  - name: TRUSTED_ECS_ECOSYSTEM_DIDS
-    value: "did:webvh:QmbZCrGJxpy2KC5bt5d7bkFJJfyEcSUzKAqCgzvKSYsgws:ecs-ecosystem.devnet.verana.network"
-  # Organization credential claims (self-issued by EcsBootstrapService)
-  - name: SELF_ISSUED_VTC_ORG_ORGANIZATIONKIND
+  # ECS credential claims [VSA-VTI-CFG-ENV-ECS]. The agent composes its own ECS
+  # credentials from these. It sends the Organization claims on the onboarding
+  # request it opens with ecs-org-issuer, which only validates them, and it
+  # self-issues the Service credential against its own ISSUER entry.
+  #
+  # The two names differ on purpose. The Organization credential names the
+  # legal entity; the Service credential names the service, and the Service
+  # name is what an explorer shows for the ecosystem this agent controls.
+  - name: ECS_CLAIMS_ORG_NAME
+    value: "Verana Example Organization"
+  - name: ECS_CLAIMS_ORG_LOGO_URI
+    value: "https://verana.io/logo.svg"
+  - name: ECS_CLAIMS_ORG_ORGANIZATION_KIND
     value: "PUBLIC"
-  - name: SELF_ISSUED_VTC_ORG_COUNTRYCODE
+  - name: ECS_CLAIMS_ORG_COUNTRY_CODE
     value: "CH"
-  - name: SELF_ISSUED_VTC_ORG_REGISTRYID
+  - name: ECS_CLAIMS_ORG_REGISTRY_ID
     value: "CH-CHE-123.456.789"
-  - name: SELF_ISSUED_VTC_ORG_REGISTRYURI
+  - name: ECS_CLAIMS_ORG_REGISTRY_URI
     value: "https://www.zefix.ch"
-  - name: SELF_ISSUED_VTC_ORG_ADDRESS
+  - name: ECS_CLAIMS_ORG_ADDRESS
     value: "Bahnhofstrasse 42, 8001 Zurich, Switzerland"
-  # Service credential claims (self-issued by EcsBootstrapService)
-  - name: SELF_ISSUED_VTC_SERVICE_TYPE
+  - name: ECS_CLAIMS_SERVICE_NAME
+    value: "Verana Example Ecosystem"
+  - name: ECS_CLAIMS_SERVICE_TYPE
     value: "WEB_PORTAL"
-  - name: SELF_ISSUED_VTC_SERVICE_DESCRIPTION
-    value: "Organization service for the Verana demo ecosystem"
+  - name: ECS_CLAIMS_SERVICE_DESCRIPTION
+    value: "Ecosystem controller of the Verana demo ecosystem"
+  - name: ECS_CLAIMS_SERVICE_LOGO_URI
+    value: "https://verana.io/logo.svg"
+  - name: ECS_CLAIMS_SERVICE_MINIMUM_AGE_REQUIRED
+    value: "18"
+  - name: ECS_CLAIMS_SERVICE_TERMS_AND_CONDITIONS_URI
+    value: "https://organization-vs.__VS_NAME__.demos.__NETWORK__.verana.network/vt/default/terms.html"
+  - name: ECS_CLAIMS_SERVICE_PRIVACY_POLICY_URI
+    value: "https://organization-vs.__VS_NAME__.demos.__NETWORK__.verana.network/vt/default/privacy.html"
 
 storage:
   size: 1Gi

@@ -56,7 +56,7 @@ source "${REPO_ROOT}/common/common.sh"
 # ---------------------------------------------------------------------------
 
 NETWORK="${NETWORK:-devnet}"
-VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.27}"
+VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.53}"
 VS_AGENT_CONTAINER_NAME="${VS_AGENT_CONTAINER_NAME:-organization-vs}"
 VS_AGENT_ADMIN_PORT="${VS_AGENT_ADMIN_PORT:-3000}"
 VS_AGENT_PUBLIC_PORT="${VS_AGENT_PUBLIC_PORT:-3001}"
@@ -79,10 +79,14 @@ EGF_DOC_URL="${EGF_DOC_URL:-https://verana-labs.github.io/governance-docs/EGF/ex
 EGF_DOC_DIGEST="${EGF_DOC_DIGEST:-}"
 
 # Organization and Service details.
-# The ORG_* values are the claims of the Organization credential, which the ECS
-# Organization credential issuer signs in step 4b. The SELF_ISSUED_VTC_SERVICE_*
-# container variables below cover the Service credential, which the agent
-# issues to itself.
+# The agent reads these as ECS_CLAIMS_* container variables
+# [VSA-VTI-CFG-ENV-ECS]. It sends the ORG_* group on the onboarding request it
+# opens with the ECS Organization credential issuer, which signs what it
+# receives, and it self-issues the Service credential from the SERVICE_* group.
+#
+# The two names differ on purpose: ORG_NAME names the legal entity, SERVICE_NAME
+# names the service, and the Service name is what an explorer shows for the
+# ecosystem this agent controls.
 ORG_NAME="${ORG_NAME:-Verana Example Organization}"
 ORG_ORGANIZATION_KIND="${ORG_ORGANIZATION_KIND:-PUBLIC}"
 ORG_COUNTRY_CODE="${ORG_COUNTRY_CODE:-CH}"
@@ -90,8 +94,9 @@ ORG_REGISTRY_ID="${ORG_REGISTRY_ID:-CH-CHE-123.456.789}"
 ORG_REGISTRY_URI="${ORG_REGISTRY_URI:-https://www.zefix.ch}"
 ORG_ADDRESS="${ORG_ADDRESS:-Bahnhofstrasse 42, 8001 Zurich, Switzerland}"
 ORG_LOGO_URI="${ORG_LOGO_URI:-https://verana.io/logo.svg}"
+SERVICE_NAME="${SERVICE_NAME:-Verana Example Ecosystem}"
 SERVICE_TYPE="${SERVICE_TYPE:-WEB_PORTAL}"
-SERVICE_DESCRIPTION="${SERVICE_DESCRIPTION:-Organization service for the Verana demo ecosystem}"
+SERVICE_DESCRIPTION="${SERVICE_DESCRIPTION:-Ecosystem controller of the Verana demo ecosystem}"
 
 # ---------------------------------------------------------------------------
 # Ensure veranad is available
@@ -99,7 +104,7 @@ SERVICE_DESCRIPTION="${SERVICE_DESCRIPTION:-Organization service for the Verana 
 
 if ! command -v veranad &> /dev/null; then
   log "veranad not found — downloading..."
-  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.3}"
+  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.4}"
   PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
   case "$ARCH" in
@@ -207,8 +212,9 @@ docker run --platform linux/amd64 -d \
   -p "${VS_AGENT_PUBLIC_PORT}:3001" \
   -p "${VS_AGENT_ADMIN_PORT}:3000" \
   -v "${VS_AGENT_DATA_DIR}:/root/.afj" \
-  -e "AGENT_PUBLIC_DID=did:webvh:${NGROK_DOMAIN}" \
-  -e "AGENT_LABEL=${ORG_NAME}" \
+  -e "PUBLIC_API_BASE_URL=${NGROK_URL}" \
+  -e "AGENT_PUBLIC_DID_METHOD=webvh" \
+  -e "AGENT_LABEL=${SERVICE_NAME}" \
   -e "ENABLE_PUBLIC_API_SWAGGER=true" \
   -e "VERANA_RPC_ENDPOINT_URL=${NODE_RPC}" \
   -e "VERANA_INDEXER_BASE_URL=${INDEXER_URL}" \
@@ -217,13 +223,20 @@ docker run --platform linux/amd64 -d \
   -e "VERANA_CORPORATION_ID=${CORPORATION_ID}" \
   -e "AGENT_MODE=standalone" \
   -e "TRUSTED_ECS_ECOSYSTEM_DIDS=${ECS_ECOSYSTEM_DID}" \
-  -e "SELF_ISSUED_VTC_ORG_ORGANIZATIONKIND=${ORG_ORGANIZATION_KIND}" \
-  -e "SELF_ISSUED_VTC_ORG_COUNTRYCODE=${ORG_COUNTRY_CODE}" \
-  -e "SELF_ISSUED_VTC_ORG_REGISTRYID=${ORG_REGISTRY_ID}" \
-  -e "SELF_ISSUED_VTC_ORG_REGISTRYURI=${ORG_REGISTRY_URI}" \
-  -e "SELF_ISSUED_VTC_ORG_ADDRESS=${ORG_ADDRESS}" \
-  -e "SELF_ISSUED_VTC_SERVICE_TYPE=${SERVICE_TYPE}" \
-  -e "SELF_ISSUED_VTC_SERVICE_DESCRIPTION=${SERVICE_DESCRIPTION}" \
+  -e "ECS_CLAIMS_ORG_NAME=${ORG_NAME}" \
+  -e "ECS_CLAIMS_ORG_LOGO_URI=${ORG_LOGO_URI}" \
+  -e "ECS_CLAIMS_ORG_ORGANIZATION_KIND=${ORG_ORGANIZATION_KIND}" \
+  -e "ECS_CLAIMS_ORG_COUNTRY_CODE=${ORG_COUNTRY_CODE}" \
+  -e "ECS_CLAIMS_ORG_REGISTRY_ID=${ORG_REGISTRY_ID}" \
+  -e "ECS_CLAIMS_ORG_REGISTRY_URI=${ORG_REGISTRY_URI}" \
+  -e "ECS_CLAIMS_ORG_ADDRESS=${ORG_ADDRESS}" \
+  -e "ECS_CLAIMS_SERVICE_NAME=${SERVICE_NAME}" \
+  -e "ECS_CLAIMS_SERVICE_TYPE=${SERVICE_TYPE}" \
+  -e "ECS_CLAIMS_SERVICE_DESCRIPTION=${SERVICE_DESCRIPTION}" \
+  -e "ECS_CLAIMS_SERVICE_LOGO_URI=${ORG_LOGO_URI}" \
+  -e "ECS_CLAIMS_SERVICE_MINIMUM_AGE_REQUIRED=18" \
+  -e "ECS_CLAIMS_SERVICE_TERMS_AND_CONDITIONS_URI=${NGROK_URL}/vt/default/terms.html" \
+  -e "ECS_CLAIMS_SERVICE_PRIVACY_POLICY_URI=${NGROK_URL}/vt/default/privacy.html" \
   --name "$VS_AGENT_CONTAINER_NAME" \
   "$VS_AGENT_IMAGE"
 
@@ -343,29 +356,9 @@ else
   log "Waiting for the agent to send the onboarding request (up to 60s)..."
   sleep 20
 
-  log "Computing logo digest for $ORG_LOGO_URI..."
-  ORG_LOGO_DIGEST_SRI=$(sri_digest_sha384 "$ORG_LOGO_URI") || {
-    err "Could not fetch/hash $ORG_LOGO_URI"
-    exit 1
-  }
-
-  # The Organization credential's required subject fields (ECS OrganizationCredential
-  # schema): id, name, logoUri, logoDigestSri, registryId, address, countryCode.
-  # The issuer refuses claims that do not satisfy the schema.
-  ORG_CLAIMS=$(jq -c -n \
-    --arg name "$ORG_NAME" \
-    --arg logoUri "$ORG_LOGO_URI" \
-    --arg logoDigestSri "$ORG_LOGO_DIGEST_SRI" \
-    --arg registryId "$ORG_REGISTRY_ID" \
-    --arg registryUri "$ORG_REGISTRY_URI" \
-    --arg address "$ORG_ADDRESS" \
-    --arg organizationKind "$ORG_ORGANIZATION_KIND" \
-    --arg countryCode "$ORG_COUNTRY_CODE" \
-    '{name: $name, logoUri: $logoUri, logoDigestSri: $logoDigestSri, registryId: $registryId,
-      registryUri: $registryUri, address: $address, organizationKind: $organizationKind,
-      countryCode: $countryCode}')
-
-  if ! validate_pending_flow "$ECS_ORG_ISSUER_ADMIN_API" "$AGENT_DID" "" "$ORG_CLAIMS"; then
+  # The agent composed the Organization claims from its ECS_CLAIMS_ORG_*
+  # variables and sent them on the request, so this step only validates.
+  if ! validate_pending_flow "$ECS_ORG_ISSUER_ADMIN_API" "$AGENT_DID"; then
     err "Could not validate on the Organization credential issuer ($ECS_ORG_ISSUER_ADMIN_API)."
     err "Is it port-forwarded? kubectl port-forward -n vna-devnet-1 svc/ecs-org-issuer 3101:3000"
     exit 1
@@ -382,8 +375,7 @@ ok "Check: ${NGROK_URL}/.well-known/did.json"
 
 log "Step 5: Create 'example' Ecosystem"
 
-if find_ecosystem_for_corporation "$CORPORATION_ID" > /dev/null 2>&1; then
-  ECOSYSTEM_ID=$(find_ecosystem_for_corporation "$CORPORATION_ID")
+if ECOSYSTEM_ID=$(find_ecosystem_for_did "$CORPORATION_ID" "$AGENT_DID"); then
   ok "Ecosystem already exists: id=$ECOSYSTEM_ID — skipping creation"
 else
   create_ecosystem "$CORPORATION" "$AGENT_DID" "$EGF_DOC_URL" "$EGF_DOC_DIGEST"

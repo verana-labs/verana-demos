@@ -67,7 +67,7 @@ jobs:
 
       - name: Install veranad
         run: |
-          VERANAD_VERSION="v0.10.3"
+          VERANAD_VERSION="v0.10.4"
           curl -sfL "https://github.com/verana-labs/verana-node/releases/download/${VERANAD_VERSION}/veranad-linux-amd64" \
             -o /usr/local/bin/veranad
           chmod +x /usr/local/bin/veranad
@@ -226,7 +226,8 @@ jobs:
 
       # The delegated Service credential comes from a HOLDER onboarding process against the
       # parent's Service ISSUER ([VSA-VTI-FLOW-OP-NEW]). The agent starts it on its own at boot;
-      # the validator supplies the claims and validates, as it does for every onboarding process.
+      # the applicant sends its own Service claims from its ECS_CLAIMS_SERVICE_* variables, and
+      # this side only validates the request.
       - name: Validate the Service credential onboarding on organization-vs
         if: inputs.step == 'onboard-issuer' || inputs.step == 'all'
         run: |
@@ -240,10 +241,6 @@ jobs:
             exit 1
           fi
 
-          SERVICE_CLAIMS=$(build_service_claims \
-            "$CHILD_PUBLIC_URL" "$SERVICE_NAME" "$SERVICE_TYPE" "$SERVICE_DESCRIPTION" \
-            "${SERVICE_LOGO_URI:-https://verana.io/logo.svg}")
-
           # The agent needs a moment to react to its own StartParticipantOP and send the request.
           for _ in $(seq 1 12); do
             if curl -sf "http://localhost:3000/v1/vt/flows?role=validator&flowState=AWAITING_OR" \
@@ -253,7 +250,7 @@ jobs:
             sleep 10
           done
 
-          if ! validate_pending_flow "http://localhost:3000" "$CHILD_DID" "" "$SERVICE_CLAIMS"; then
+          if ! validate_pending_flow "http://localhost:3000" "$CHILD_DID"; then
             echo "::error::Could not validate the Service credential onboarding for $CHILD_DID"
             exit 1
           fi
@@ -410,15 +407,6 @@ jobs:
 
           kubectl rollout status deployment/"${APP_NAME}" -n "$NAMESPACE" --timeout=300s
 
-      - name: Configure VS-Agent EVENTS_BASE_URL
-        if: inputs.step == 'deploy-web' || inputs.step == 'all'
-        run: |
-          RELEASE_NAME="issuer-web-${VS_NAME}"
-          APP_NAME="issuer-web-app-${VS_NAME}"
-          WEB_URL="http://${APP_NAME}:${ISSUER_WEB_PORT:-4001}/webhooks"
-          kubectl set env statefulset/"${RELEASE_NAME}" \
-            -n "${{ secrets.K8S_NAMESPACE }}" \
-            EVENTS_BASE_URL="$WEB_URL"
 
       # -----------------------------------------------------------------------
       # CLEANUP

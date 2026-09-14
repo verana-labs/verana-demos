@@ -50,7 +50,7 @@ set_network_vars() {
       # The shared ECS Ecosystem VS Agent (verana-deploy/scripts/ecs-ecosystem).
       # It defines the ECS schemas. It does NOT issue the Organization
       # credentials — see ECS_ORG_ISSUER_* below.
-      ECS_ECOSYSTEM_DID="${ECS_ECOSYSTEM_DID:-did:webvh:QmbZCrGJxpy2KC5bt5d7bkFJJfyEcSUzKAqCgzvKSYsgws:ecs-ecosystem.devnet.verana.network}"
+      ECS_ECOSYSTEM_DID="${ECS_ECOSYSTEM_DID:-did:webvh:QmbDoPbwb4Nu2VLm2oSEUrnMokAzr5fCPu4c13Ysmov6SH:ecs-ecosystem.devnet.verana.network}"
       # Port-forward before use: kubectl port-forward -n vna-devnet-1 svc/ecs-ecosystem 3100:3000
       ECS_ECOSYSTEM_ADMIN_API="${ECS_ECOSYSTEM_ADMIN_API:-http://localhost:3100}"
       # The Verifiable Service the ECS Ecosystem corporation assigned the
@@ -400,7 +400,9 @@ create_corporation() {
   local did=$1
   local doc_url="${2:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
   local doc_digest="${3:-}"
-  local msg_types="$4"
+  # The callers that take the default pass three arguments, and every script
+  # runs under `set -u`, so this must tolerate an absent fourth.
+  local msg_types="${4:-}"
   if [ -z "$msg_types" ]; then
     msg_types="$OA_MSGS_ECOSYSTEM"
   fi
@@ -624,14 +626,21 @@ create_ecosystem() {
   export ECOSYSTEM_ID
 }
 
-# Check the indexer for an Ecosystem already owned by a Corporation.
-# Usage: find_ecosystem_for_corporation <corporation_id>
+# Find the Ecosystem of a Corporation that a given DID controls.
+#
+# Match on the DID, not on the Corporation alone. One Corporation may own
+# several Ecosystems, and a wiped wallet gives the agent a new did:webvh SCID.
+# Taking the first Ecosystem of the Corporation would then rebuild on one whose
+# controller DID no longer exists. Archived Ecosystems never match.
+# Usage: find_ecosystem_for_did <corporation_id> <did>
 # Prints the ecosystem id on stdout if found (and returns 0); returns 1 otherwise.
-find_ecosystem_for_corporation() {
+find_ecosystem_for_did() {
   local corporation_id=$1
+  local did=$2
   local eco_id
   eco_id=$(veranad query ec list-ecosystems --corporation-id "$corporation_id" --node "$NODE_RPC" --output json 2>/dev/null \
-    | jq -r '.ecosystems[0].id // empty' 2>/dev/null || echo "")
+    | jq -r --arg did "$did" \
+        'first((.ecosystems // [])[] | select(.did == $did and .archived == null) | .id) // empty' 2>/dev/null || echo "")
   if [ -n "$eco_id" ]; then
     echo "$eco_id"
     return 0
@@ -968,24 +977,6 @@ discover_custom_schema_id() {
 # (VtFlowsController.ts): unauthenticated on the internal admin listener.
 # ---------------------------------------------------------------------------
 
-# SRI digest (sha384) of a URL's content, in the same "sha384-<base64>" form
-# vs-agent computes with generateDigestSRI/urlDigestSri.
-# Usage: sri_digest_sha384 <url>
-sri_digest_sha384() {
-  local url=$1
-  local b64
-  b64=$(curl -sf "$url" | openssl dgst -sha384 -binary | openssl base64 -A) || return 1
-  [ -n "$b64" ] || return 1
-  echo "sha384-${b64}"
-}
-
-# Find a pending onboarding request from a given peer DID and validate it,
-# offering the credential if the flow calls for one. The validator only
-# builds a credential from claims actually present on the flow record — pass
-# claims_json (the real subject data, e.g. org name/registryId/address) so
-# the offered credential conforms to the schema instead of being rejected as
-# empty. Omit it only for schemas that carry no subject claims of their own.
-# Usage: validate_pending_flow <admin_api> <peer_did> [schema_id] [claims_json]
 # Resolve the Corporation that owns a DID, and set CORPORATION_ID and CORPORATION.
 #
 # The DID ownership invariant of the VPR gives every DID a single owning Corporation, so any
@@ -1009,45 +1000,18 @@ resolve_corporation_for_did() {
   resolve_corporation "$CORPORATION_ID"
 }
 
-# Build the claims of an ECS Service credential for a delegated service.
+# Find a pending onboarding request from a given peer DID and validate it,
+# offering the credential if the flow calls for one.
 #
-# In a delegated onboarding the applicant sends no claims: the validator supplies them, as it
-# does for every other onboarding process. The agent serves its own terms, privacy policy and
-# logo, so the digests come from the agent that will hold the credential.
-# Usage: build_service_claims <public_url> <name> <type> <description> [logo_uri]
-build_service_claims() {
-  local public_url="${1%/}"
-  local name=$2
-  local type=$3
-  local description=$4
-  local logo_uri="${5:-${public_url}/vt/default/logo.svg}"
-
-  local terms_uri="${public_url}/vt/default/terms.html"
-  local privacy_uri="${public_url}/vt/default/privacy.html"
-
-  local logo_digest terms_digest privacy_digest
-  logo_digest=$(compute_sri_digest "$logo_uri") || return 1
-  terms_digest=$(compute_sri_digest "$terms_uri") || return 1
-  privacy_digest=$(compute_sri_digest "$privacy_uri") || return 1
-
-  jq -c -n \
-    --arg name "$name" --arg type "$type" --arg description "$description" \
-    --arg logoUri "$logo_uri" --arg logoDigestSri "$logo_digest" \
-    --arg termsUri "$terms_uri" --arg termsDigestSri "$terms_digest" \
-    --arg privacyUri "$privacy_uri" --arg privacyDigestSri "$privacy_digest" \
-    --argjson minimumAgeRequired "${SERVICE_MINIMUM_AGE:-18}" \
-    '{name: $name, type: $type, description: $description,
-      logoUri: $logoUri, logoDigestSri: $logoDigestSri,
-      minimumAgeRequired: $minimumAgeRequired,
-      termsAndConditionsUri: $termsUri, termsAndConditionsDigestSri: $termsDigestSri,
-      privacyPolicyUri: $privacyUri, privacyPolicyDigestSri: $privacyDigestSri}'
-}
-
+# The applicant agent composes its own ECS claims from its ECS_CLAIMS_*
+# variables and sends them on the onboarding request ([VSA-VTI-CFG-ENV-ECS]),
+# so the validator has nothing to supply: it reads the claims off the flow
+# record and signs them.
+# Usage: validate_pending_flow <admin_api> <peer_did> [schema_id]
 validate_pending_flow() {
   local admin_api=$1
   local peer_did=$2
   local schema_id="${3:-}"
-  local claims_json="${4:-}"
 
   log "Looking up pending vt-flow from $peer_did on $admin_api..."
   local query="role=validator&flowState=AWAITING_OR&peerDID=$(printf '%s' "$peer_did" | jq -sRr @uri)"
@@ -1067,21 +1031,6 @@ validate_pending_flow() {
     return 1
   fi
   ok "Found pending flow: $session_id"
-
-  if [ -n "$claims_json" ]; then
-    log "Submitting credential claims for flow $session_id..."
-    local claims_result claims_http_code
-    claims_http_code=$(curl -s -o /tmp/vt_flow_claims.json -w '%{http_code}' \
-      -X PUT "${admin_api}/v1/vt/flows/${session_id}/claims" \
-      -H 'Content-Type: application/json' \
-      -d "$(jq -c -n --argjson claims "$claims_json" '{claims: $claims}')")
-    claims_result=$(cat /tmp/vt_flow_claims.json)
-    if [ "$claims_http_code" != "200" ] && [ "$claims_http_code" != "201" ]; then
-      err "Failed to submit claims for flow $session_id (HTTP $claims_http_code). Response: $claims_result"
-      return 1
-    fi
-    ok "Claims submitted for flow $session_id"
-  fi
 
   local result http_code
   http_code=$(curl -s -o /tmp/vt_flow_validate.json -w '%{http_code}' \
@@ -1105,8 +1054,10 @@ has_completed_flow() {
 
   local flows
   flows=$(curl -sf "${admin_api}/v1/vt/flows?${query}" 2>/dev/null) || return 1
+  # The flow record names the state in `state`; `flowState` is the field the
+  # vt.flows event carries, and it is null on a record read back from the API.
   local match
   match=$(echo "$flows" | jq -r '
-    [.[] | select(.flowState == "COMPLETED" or .flowState == "VALIDATED")] | length' 2>/dev/null || echo "0")
+    [.[] | (.state // .flowState) | select(. == "COMPLETED" or . == "VALIDATED")] | length' 2>/dev/null || echo "0")
   [ "${match:-0}" -gt 0 ]
 }

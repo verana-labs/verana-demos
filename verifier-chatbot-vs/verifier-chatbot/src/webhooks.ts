@@ -3,32 +3,64 @@ import { Chatbot } from "./chatbot";
 import { VsAgentClient } from "./vs-agent-client";
 import { PlaygroundSessionStore } from "./playground-sessions";
 
-interface ConnectionStateEvent {
-  connectionId: string;
+/**
+ * Events API envelope. The agent delivers every event as one POST to
+ * EVENTS_WEBHOOK_URL. See the Events section of the VS Agent API document.
+ */
+interface EventEnvelope<T = Record<string, unknown>> {
+  id: string;
+  type: string;
+  timestamp: string;
+  data: T;
+}
+
+/** `didcomm.connections.state-updated` — the connection record plus previousState. */
+interface ConnectionRecord {
+  id: string;
   state: string;
+  previousState: string | null;
   [key: string]: unknown;
 }
 
-interface MessageReceivedEvent {
-  timestamp?: string;
-  message: {
-    id?: string;
-    connectionId: string;
-    type?: string;
-    content?: string;
-    text?: string;
-    selectionId?: string;
-    menuId?: string;
-    selectedOption?: string;
-    claims?: Record<string, string>;
-    submittedProofItems?: Array<{
-      claims?: Record<string, string>;
-      [key: string]: unknown;
-    }>;
-    [key: string]: unknown;
-  };
+/** `didcomm.basic-messages.message-received` — an inbound text message. */
+interface BasicMessageRecord {
+  id: string;
+  connectionId: string;
+  role: string;
+  content: string;
   [key: string]: unknown;
 }
+
+/**
+ * `didcomm.action-menu.perform-received` — the holder picked a contextual menu
+ * option. The plaintext Action Menu `perform` message carries the option id in
+ * its `name` field.
+ */
+interface ExtensionMessageEvent {
+  connectionId: string;
+  threadId?: string;
+  message: { name?: string; [key: string]: unknown };
+}
+
+/**
+ * `didcomm.presentations.state-updated` — the presentation record plus
+ * previousState. The holder's answer arrives here, not as a chat message:
+ * the agent verifies the presentation and reports the revealed attributes.
+ */
+interface PresentationRecord {
+  proofExchangeId: string;
+  connectionId?: string;
+  state: string;
+  previousState: string | null;
+  verified: boolean;
+  claims: { name: string; value: string }[];
+  [key: string]: unknown;
+}
+
+const CONNECTION_STATE_UPDATED = "didcomm.connections.state-updated";
+const MESSAGE_RECEIVED = "didcomm.basic-messages.message-received";
+const MENU_PERFORM_RECEIVED = "didcomm.action-menu.perform-received";
+const PRESENTATION_STATE_UPDATED = "didcomm.presentations.state-updated";
 
 export function createWebhookRouter(
   chatbot: Chatbot,
@@ -64,95 +96,14 @@ export function createWebhookRouter(
     }
   });
 
-  router.post(
-    "/connection-state-updated",
-    async (req: Request, res: Response) => {
-      try {
-        const event = req.body as ConnectionStateEvent;
-        console.log(
-          `Webhook: connection-state-updated — ${event.connectionId} → ${event.state}`
-        );
-
-        if (
-          event.state === "COMPLETED" ||
-          event.state === "completed" ||
-          event.state === "active"
-        ) {
-          const claimed = playground.claimNextPending(event.connectionId);
-          if (claimed) {
-            console.log(
-              `Connection ${event.connectionId} claimed playground session ${claimed.sessionId}`
-            );
-          }
-          await chatbot.onNewConnection(event.connectionId);
-        }
-
-        res.status(200).json({ ok: true });
-      } catch (error) {
-        console.error("Error handling connection event:", error);
-        res.status(500).json({ error: "Internal server error" });
-      }
-    }
-  );
-
-  router.post("/message-received", async (req: Request, res: Response) => {
+  router.post("/events", async (req: Request, res: Response) => {
+    const event = req.body as EventEnvelope;
     try {
-      const event = req.body as MessageReceivedEvent;
-      const msg = event.message;
-      const connectionId = msg.connectionId;
-      const msgType = (msg.type || "").toLowerCase();
-      const messageId = msg.id;
-
-      console.log(`Webhook: message-received — ${connectionId} type=${msgType} id=${messageId}`);
-
-      // Ignore system messages (profile auto-disclosure, receipts, etc.)
-      if (msgType === "profile" || msgType === "receipts") {
-        res.status(200).json({ ok: true });
-        return;
-      }
-
-      // Send received + viewed indicators for all user messages
-      if (messageId && connectionId) {
-        chatbot.sendReceipts(connectionId, messageId).catch((err: unknown) =>
-          console.error("Failed to send receipts:", err)
-        );
-      }
-
-      // Handle proof submission
-      if (
-        msgType === "identity-proof-submit" ||
-        msgType === "identity-proof-result" ||
-        msg.submittedProofItems
-      ) {
-        const claims = extractClaims(msg);
-        playground.markVerified(connectionId, claims);
-        await chatbot.onProofSubmit(connectionId, claims);
-      }
-      // Handle menu selection
-      else if (
-        msgType === "contextual-menu-select" ||
-        msgType === "menu-select" ||
-        msg.selectionId ||
-        msg.menuId ||
-        msg.selectedOption
-      ) {
-        const menuId =
-          msg.selectionId || msg.menuId || msg.selectedOption || msg.content || msg.text || "";
-        await chatbot.onMenuSelect(connectionId, menuId);
-      }
-      // Handle text message
-      else if (msgType === "text") {
-        const text = msg.content || msg.text || "";
-        if (text) {
-          await chatbot.onTextMessage(connectionId, text);
-        }
-      } else {
-        console.log(`Ignoring unhandled message type: ${msgType}`);
-      }
-
+      console.log(`Event ${event.type} (${event.id})`);
+      await handleEvent(chatbot, playground, event);
       res.status(200).json({ ok: true });
     } catch (error) {
-      console.error("Error handling message event:", error);
+      console.error(`Error handling event ${event?.type}:`, error);
       res.status(500).json({ error: "Internal server error" });
     }
   });
@@ -165,34 +116,81 @@ export function createWebhookRouter(
   return router;
 }
 
-function extractClaims(
-  msg: MessageReceivedEvent["message"]
-): Record<string, string> {
-  const raw: Record<string, unknown> = {};
-
-  // Try to extract claims from submittedProofItems
-  if (msg.submittedProofItems && msg.submittedProofItems.length > 0) {
-    for (const item of msg.submittedProofItems) {
-      if (item.claims) {
-        Object.assign(raw, item.claims);
+async function handleEvent(
+  chatbot: Chatbot,
+  playground: PlaygroundSessionStore,
+  event: EventEnvelope
+): Promise<void> {
+  switch (event.type) {
+    case CONNECTION_STATE_UPDATED: {
+      const record = event.data as unknown as ConnectionRecord;
+      if (record.state !== "completed") return;
+      const claimed = playground.claimNextPending(record.id);
+      if (claimed) {
+        console.log(
+          `Connection ${record.id} claimed playground session ${claimed.sessionId}`
+        );
       }
+      await chatbot.onNewConnection(record.id);
+      return;
     }
-  } else if (msg.claims) {
-    // Fallback: try claims directly on message
-    Object.assign(raw, msg.claims);
-  } else {
-    console.warn("No claims found in proof submission message");
-    return {};
-  }
 
-  // Unwrap object values (e.g. {value: "John"} → "John")
-  const result: Record<string, string> = {};
-  for (const [key, val] of Object.entries(raw)) {
-    if (val && typeof val === "object" && "value" in val) {
-      result[key] = String((val as { value: unknown }).value);
-    } else {
-      result[key] = String(val);
+    case MESSAGE_RECEIVED: {
+      const message = event.data as unknown as BasicMessageRecord;
+      // Tell the holder the message arrived and was read.
+      chatbot
+        .sendReceipts(message.connectionId, message.id)
+        .catch((err: unknown) =>
+          console.error("Failed to send receipts:", err)
+        );
+      if (message.content) {
+        await chatbot.onTextMessage(message.connectionId, message.content);
+      }
+      return;
     }
+
+    case MENU_PERFORM_RECEIVED: {
+      const performed = event.data as unknown as ExtensionMessageEvent;
+      const menuId = performed.message?.name ?? "";
+      if (menuId) {
+        await chatbot.onMenuSelect(performed.connectionId, menuId);
+      }
+      return;
+    }
+
+    case PRESENTATION_STATE_UPDATED: {
+      const presentation = event.data as unknown as PresentationRecord;
+      // The agent sets `verified` once it has checked the presentation, which
+      // is the state the record reaches as `done`.
+      if (presentation.state !== "done" || !presentation.connectionId) return;
+      if (!presentation.verified) {
+        console.warn(
+          `Presentation ${presentation.proofExchangeId} did not verify`
+        );
+        return;
+      }
+      const claims = toClaimMap(presentation.claims);
+      playground.markVerified(presentation.connectionId, claims);
+      await chatbot.onProofSubmit(presentation.connectionId, claims);
+      return;
+    }
+
+    default:
+      // Receipts, profile disclosure, credential exchanges and indexer
+      // notifications need no action from this chatbot.
+      return;
+  }
+}
+
+function toClaimMap(
+  claims: { name: string; value: string }[] | undefined
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const claim of claims ?? []) {
+    result[claim.name] = String(claim.value);
+  }
+  if (Object.keys(result).length === 0) {
+    console.warn("The verified presentation revealed no attribute");
   }
   return result;
 }

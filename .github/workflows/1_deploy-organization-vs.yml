@@ -89,7 +89,7 @@ jobs:
       - name: Generate Helm values
         run: |
           yq 'del(.chartSource, .chartVersion)' /tmp/deployment-resolved.yaml > /tmp/helm-values.yaml
-          yq -i '.didcommLabel = env(ORG_NAME)' /tmp/helm-values.yaml
+          yq -i '.didcommLabel = env(SERVICE_NAME)' /tmp/helm-values.yaml
           # Do NOT expose admin via Helm private ingress — a standalone
           # path-restricted ingress is deployed separately after Helm install.
           echo "--- Helm values ---"
@@ -109,7 +109,7 @@ jobs:
 
       - name: Install veranad
         run: |
-          VERANAD_VERSION="v0.10.3"
+          VERANAD_VERSION="v0.10.4"
           curl -sfL "https://github.com/verana-labs/verana-node/releases/download/${VERANAD_VERSION}/veranad-linux-amd64" \
             -o /usr/local/bin/veranad
           chmod +x /usr/local/bin/veranad
@@ -309,20 +309,9 @@ jobs:
           if has_completed_flow "http://localhost:3101" "$AGENT_DID"; then
             ok "Already validated — skipping"
           else
-            ORG_LOGO_DIGEST_SRI=$(sri_digest_sha384 "$ORG_LOGO_URI")
-            ORG_CLAIMS=$(jq -c -n \
-              --arg name "$ORG_NAME" \
-              --arg logoUri "$ORG_LOGO_URI" \
-              --arg logoDigestSri "$ORG_LOGO_DIGEST_SRI" \
-              --arg registryId "$ORG_REGISTRY_ID" \
-              --arg registryUri "$ORG_REGISTRY_URI" \
-              --arg address "$ORG_ADDRESS" \
-              --arg organizationKind "$ORG_ORGANIZATION_KIND" \
-              --arg countryCode "$ORG_COUNTRY_CODE" \
-              '{name: $name, logoUri: $logoUri, logoDigestSri: $logoDigestSri, registryId: $registryId,
-                registryUri: $registryUri, address: $address, organizationKind: $organizationKind,
-                countryCode: $countryCode}')
-            validate_pending_flow "http://localhost:3101" "$AGENT_DID" "" "$ORG_CLAIMS"
+            # The agent composed its Organization claims from its ECS_CLAIMS_ORG_*
+            # variables and sent them on the request, so this step only validates.
+            validate_pending_flow "http://localhost:3101" "$AGENT_DID"
           fi
 
       # -----------------------------------------------------------------------
@@ -343,7 +332,7 @@ jobs:
           AGENT_DID="${AGENT_DID:-$(curl -sf "http://localhost:3000/v1/agent" | jq -r '.publicDid')}"
           log "Agent DID: $AGENT_DID"
 
-          if ECOSYSTEM_ID=$(find_ecosystem_for_corporation "$CORPORATION_ID"); then
+          if ECOSYSTEM_ID=$(find_ecosystem_for_did "$CORPORATION_ID" "$AGENT_DID"); then
             ok "Ecosystem already exists: id=$ECOSYSTEM_ID — skipping"
           else
             create_ecosystem "$CORPORATION" "$AGENT_DID" "$EGF_DOC_URL"

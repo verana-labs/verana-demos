@@ -17,16 +17,17 @@
 
 services:
   vs-agent:
-    image: ${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.27}
+    image: ${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.53}
     platform: linux/amd64
     ports:
       - "${VS_AGENT_ADMIN_PORT:-3006}:3000"
       - "${VS_AGENT_PUBLIC_PORT:-3007}:3001"
     environment:
-      - AGENT_PUBLIC_DID=did:webvh:${NGROK_DOMAIN}
+      - PUBLIC_API_BASE_URL=https://${NGROK_DOMAIN}
+      - AGENT_PUBLIC_DID_METHOD=webvh
       - AGENT_LABEL=${SERVICE_NAME:-Example Verifier Chatbot}
       - ENABLE_PUBLIC_API_SWAGGER=true
-      - EVENTS_BASE_URL=http://verifier-chatbot:${CHATBOT_PORT:-4002}
+      - EVENTS_WEBHOOK_URL=http://verifier-chatbot:${CHATBOT_PORT:-4002}/events
     volumes:
       - vs-agent-data:/root/.afj
 

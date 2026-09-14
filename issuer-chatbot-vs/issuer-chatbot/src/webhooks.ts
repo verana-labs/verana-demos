@@ -1,103 +1,60 @@
 import { Router, Request, Response } from "express";
 import { Chatbot } from "./chatbot";
 
-interface ConnectionStateEvent {
-  connectionId: string;
+/**
+ * Events API envelope. The agent delivers every event as one POST to
+ * EVENTS_WEBHOOK_URL. See the Events section of the VS Agent API document.
+ */
+interface EventEnvelope<T = Record<string, unknown>> {
+  id: string;
+  type: string;
+  timestamp: string;
+  data: T;
+}
+
+/** `didcomm.connections.state-updated` — the connection record plus previousState. */
+interface ConnectionRecord {
+  id: string;
   state: string;
+  previousState: string | null;
   [key: string]: unknown;
 }
 
-interface MessageReceivedEvent {
-  timestamp?: string;
-  message: {
-    id?: string;
-    connectionId: string;
-    type?: string;
-    content?: string;
-    text?: string;
-    selectionId?: string;
-    menuId?: string;
-    selectedOption?: string;
-    [key: string]: unknown;
-  };
+/** `didcomm.basic-messages.message-received` — an inbound text message. */
+interface BasicMessageRecord {
+  id: string;
+  connectionId: string;
+  role: string;
+  content: string;
   [key: string]: unknown;
 }
+
+/**
+ * `didcomm.action-menu.perform-received` — the holder picked a contextual menu
+ * option. The plaintext Action Menu `perform` message carries the option id in
+ * its `name` field.
+ */
+interface ExtensionMessageEvent {
+  connectionId: string;
+  threadId?: string;
+  message: { name?: string; [key: string]: unknown };
+}
+
+const CONNECTION_STATE_UPDATED = "didcomm.connections.state-updated";
+const MESSAGE_RECEIVED = "didcomm.basic-messages.message-received";
+const MENU_PERFORM_RECEIVED = "didcomm.action-menu.perform-received";
 
 export function createWebhookRouter(chatbot: Chatbot): Router {
   const router = Router();
 
-  router.post(
-    "/connection-state-updated",
-    async (req: Request, res: Response) => {
-      try {
-        const event = req.body as ConnectionStateEvent;
-        console.log(
-          `Webhook: connection-state-updated — ${event.connectionId} → ${event.state}`
-        );
-
-        if (
-          event.state === "COMPLETED" ||
-          event.state === "completed" ||
-          event.state === "active"
-        ) {
-          await chatbot.onNewConnection(event.connectionId);
-        }
-
-        res.status(200).json({ ok: true });
-      } catch (error) {
-        console.error("Error handling connection event:", error);
-        res.status(500).json({ error: "Internal server error" });
-      }
-    }
-  );
-
-  router.post("/message-received", async (req: Request, res: Response) => {
+  router.post("/events", async (req: Request, res: Response) => {
+    const event = req.body as EventEnvelope;
     try {
-      const event = req.body as MessageReceivedEvent;
-      const msg = event.message;
-      const connectionId = msg.connectionId;
-      const msgType = (msg.type || "").toLowerCase();
-      const messageId = msg.id;
-
-      console.log(`Webhook: message-received — ${connectionId} type=${msgType} id=${messageId}`);
-
-      // Ignore system messages (profile auto-disclosure, receipts, etc.)
-      if (
-        msgType === "profile" ||
-        msgType === "receipts"
-      ) {
-        res.status(200).json({ ok: true });
-        return;
-      }
-
-      // Send received + viewed indicators for all user messages
-      if (messageId && connectionId) {
-        chatbot.sendReceipts(connectionId, messageId).catch((err: unknown) =>
-          console.error("Failed to send receipts:", err)
-        );
-      }
-
-      if (
-        msgType === "contextual-menu-select" ||
-        msgType === "menu-select" ||
-        msg.menuId ||
-        msg.selectedOption
-      ) {
-        const menuId =
-          msg.selectionId || msg.menuId || msg.selectedOption || msg.content || msg.text || "";
-        await chatbot.onMenuSelect(connectionId, menuId);
-      } else if (msgType === "text") {
-        const text = msg.content || msg.text || "";
-        if (text) {
-          await chatbot.onTextMessage(connectionId, text);
-        }
-      } else {
-        console.log(`Ignoring unhandled message type: ${msgType}`);
-      }
-
+      console.log(`Event ${event.type} (${event.id})`);
+      await handleEvent(chatbot, event);
       res.status(200).json({ ok: true });
     } catch (error) {
-      console.error("Error handling message event:", error);
+      console.error(`Error handling event ${event?.type}:`, error);
       res.status(500).json({ error: "Internal server error" });
     }
   });
@@ -108,4 +65,47 @@ export function createWebhookRouter(chatbot: Chatbot): Router {
   });
 
   return router;
+}
+
+async function handleEvent(
+  chatbot: Chatbot,
+  event: EventEnvelope
+): Promise<void> {
+  switch (event.type) {
+    case CONNECTION_STATE_UPDATED: {
+      const record = event.data as unknown as ConnectionRecord;
+      if (record.state === "completed") {
+        await chatbot.onNewConnection(record.id);
+      }
+      return;
+    }
+
+    case MESSAGE_RECEIVED: {
+      const message = event.data as unknown as BasicMessageRecord;
+      // Tell the holder the message arrived and was read.
+      chatbot
+        .sendReceipts(message.connectionId, message.id)
+        .catch((err: unknown) =>
+          console.error("Failed to send receipts:", err)
+        );
+      if (message.content) {
+        await chatbot.onTextMessage(message.connectionId, message.content);
+      }
+      return;
+    }
+
+    case MENU_PERFORM_RECEIVED: {
+      const performed = event.data as unknown as ExtensionMessageEvent;
+      const menuId = performed.message?.name ?? "";
+      if (menuId) {
+        await chatbot.onMenuSelect(performed.connectionId, menuId);
+      }
+      return;
+    }
+
+    default:
+      // Receipts, profile disclosure, credential exchanges and indexer
+      // notifications need no action from this chatbot.
+      return;
+  }
 }

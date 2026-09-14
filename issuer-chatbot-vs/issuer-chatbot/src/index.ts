@@ -46,16 +46,9 @@ async function main(): Promise<void> {
 
   app.listen(config.chatbotPort, () => {
     console.log(`Issuer Chatbot listening on port ${config.chatbotPort}`);
-    console.log(`Webhook endpoints:`);
-    console.log(
-      `  POST http://localhost:${config.chatbotPort}/connection-state-updated`
-    );
-    console.log(
-      `  POST http://localhost:${config.chatbotPort}/message-received`
-    );
-    console.log(
-      `  GET  http://localhost:${config.chatbotPort}/health`
-    );
+    console.log(`Endpoints:`);
+    console.log(`  POST http://localhost:${config.chatbotPort}/events`);
+    console.log(`  GET  http://localhost:${config.chatbotPort}/health`);
   });
 
   // Graceful shutdown

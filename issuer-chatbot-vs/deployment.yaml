@@ -4,7 +4,9 @@
 # substitutes __NETWORK__, __VS_NAME__, __CHILD_VS_NAME__, __CORPORATION_ID__
 # and __ORG_VS_DID__ placeholders at deploy time.
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v2.0.0-dev.27
+# TEMPORARY: a build of vs-agent#703, matching the ECS services on devnet.
+# Move back to a dev release once that PR merges.
+chartVersion: v2.0.0-pr703.3
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
@@ -14,10 +16,36 @@ replicas: 1
 
 adminPort: 3000
 didcommPort: 3001
-eventsBaseUrl: "https://issuer-chatbot-vs.__VS_NAME__.demos.__NETWORK__.verana.network"
 didcommInvitationImageUrl: "https://verana.io/logo.svg"
 publicDidMethod: "webvh"
 enablePublicApiSwagger: true
+
+# One URL receives every event, as one POST per event carrying the Events API
+# envelope. The chatbot serves it at /events — see issuer-chatbot-vs/issuer-chatbot/src/webhooks.ts.
+eventsWebhookUrl: "http://issuer-chatbot-app-__VS_NAME__:4000/events"
+
+# The agent classifies every Admin API request on the peer address of its TCP
+# connection, and it never reads a forwarding header. The chatbot reaches this
+# admin API through the cluster Service, so the pod CIDR is trusted, and a
+# kubectl port-forward arrives on 127.0.0.1.
+#
+# This is also why the deployment publishes no admin ingress: the ingress
+# controller runs inside the same pod CIDR, so an admin ingress on the admin
+# port would serve the internet without authentication.
+adminApiAuthMode: "internal"
+adminApiTrustedNetworks: "127.0.0.0/8,::1/128,10.2.0.0/16"
+
+# Verana network
+veranaRpcEndpointUrl: "https://rpc.__NETWORK__.verana.network"
+veranaIndexerBaseUrl: "https://idx.__NETWORK__.verana.network"
+veranaChainId: "vna-__NETWORK__-1"
+# Resolved by the deploy step from organization-vs's DID.
+veranaCorporationId: "__CORPORATION_ID__"
+
+agentMode: "delegated"
+# organization-vs's own DID — this agent requests its Service credential
+# from it over DIDComm (EcsBootstrapService.runDelegated()).
+delegatedParentVsDid: "__ORG_VS_DID__"
 
 resources:
   requests:
@@ -43,31 +71,28 @@ extraEnv:
     value: "3"
   - name: USE_CORS
     value: "true"
-  - name: VERANA_RPC_ENDPOINT_URL
-    value: "https://rpc.__NETWORK__.verana.network"
-  - name: VERANA_INDEXER_BASE_URL
-    value: "https://idx.__NETWORK__.verana.network"
-  - name: VERANA_CHAIN_ID
-    value: "vna-__NETWORK__-1"
   - name: VERANA_ACCOUNT_MNEMONIC
     valueFrom:
       secretKeyRef:
         name: issuer-chatbot-vs-secrets
         key: ISSUER_CHATBOT_VS_AGENT_MNEMONIC
-  # Set by scripts/setup.sh's "bootstrap-corporation" step.
-  - name: VERANA_CORPORATION_ID
-    value: "__CORPORATION_ID__"
-  - name: AGENT_MODE
-    value: "delegated"
-  # organization-vs's own DID — this agent requests its Service credential
-  # from it directly over DIDComm (EcsBootstrapService.runDelegated()).
-  - name: AGENT_DELEGATED_PARENT_VS_DID
-    value: "__ORG_VS_DID__"
-  # Service credential claims (self-issued by EcsBootstrapService)
-  - name: SELF_ISSUED_VTC_SERVICE_TYPE
+  # ECS credential claims [VSA-VTI-CFG-ENV-ECS]. A delegated agent reads only
+  # the service group: it sends these claims on the onboarding request it opens
+  # with organization-vs, which validates them and issues the credential.
+  - name: ECS_CLAIMS_SERVICE_NAME
+    value: "Example Issuer Chatbot"
+  - name: ECS_CLAIMS_SERVICE_TYPE
     value: "MESSAGING_APP"
-  - name: SELF_ISSUED_VTC_SERVICE_DESCRIPTION
+  - name: ECS_CLAIMS_SERVICE_DESCRIPTION
     value: "Chatbot credential issuer for the Verana demo ecosystem"
+  - name: ECS_CLAIMS_SERVICE_LOGO_URI
+    value: "https://verana.io/logo.svg"
+  - name: ECS_CLAIMS_SERVICE_MINIMUM_AGE_REQUIRED
+    value: "18"
+  - name: ECS_CLAIMS_SERVICE_TERMS_AND_CONDITIONS_URI
+    value: "https://issuer-chatbot-vs.__VS_NAME__.demos.__NETWORK__.verana.network/vt/default/terms.html"
+  - name: ECS_CLAIMS_SERVICE_PRIVACY_POLICY_URI
+    value: "https://issuer-chatbot-vs.__VS_NAME__.demos.__NETWORK__.verana.network/vt/default/privacy.html"
 
 storage:
   size: 1Gi
