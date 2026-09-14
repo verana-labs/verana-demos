@@ -289,11 +289,20 @@ jobs:
               echo "::error::Could not find the root participant for schema $CUSTOM_SCHEMA_ID"
               exit 1
             fi
-            start_participant_op "$CORPORATION" "$PP_ROLE_ISSUER" "$ROOT_PARTICIPANT_ID" "$CHILD_DID" \
-              "$AGENT_ADDR" "$VSOA_ISSUER" > /dev/null
+            PARTICIPANT_ID=$(start_participant_op "$CORPORATION" "$PP_ROLE_ISSUER" \
+              "$ROOT_PARTICIPANT_ID" "$CHILD_DID" "$AGENT_ADDR" "$VSOA_ISSUER")
+            if [ -z "$PARTICIPANT_ID" ]; then
+              echo "::error::Could not read the new ISSUER participant ID"
+              exit 1
+            fi
 
+            # The validator is organization-vs's ECOSYSTEM participant, so the
+            # Corporation operator must validate. See set_participant_validated.
             sleep 15
-            validate_pending_flow "http://localhost:3000" "$CHILD_DID"
+            if ! set_participant_validated "$CORPORATION" "$PARTICIPANT_ID"; then
+              echo "::error::Could not validate ISSUER participant $PARTICIPANT_ID"
+              exit 1
+            fi
           fi
 
       # -----------------------------------------------------------------------

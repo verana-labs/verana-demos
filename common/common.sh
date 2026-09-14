@@ -785,6 +785,51 @@ start_participant_op() {
   echo "$participant_id"
 }
 
+# Validate a pending participant with the Corporation operator account.
+#
+# Use this when the validator participant holds the ECOSYSTEM role. The agent
+# admin API cannot do it. [MOD-PP-MSG-3-2-1] accepts either a Corporation
+# operator or a vs_operator delegated ON THE VALIDATOR PARTICIPANT, and
+# vsoaPermittedMsgTypes grants no message type to the ECOSYSTEM role. An agent
+# therefore never gets the authority to validate against an Ecosystem it
+# controls, and POST /v1/vt/flows/<id>/validate answers HTTP 500.
+#
+# The applicant agent completes the credential exchange on its own, because it
+# reacts to the SetParticipantOPToValidated event from the indexer.
+# Usage: set_participant_validated <corporation> <participant_id>
+set_participant_validated() {
+  local corporation=$1
+  local participant_id=$2
+
+  log "Validating participant $participant_id as the Corporation operator..."
+  local raw_output
+  raw_output=$(veranad tx pp set-participant-op-validated \
+    "$participant_id" \
+    --corporation "$corporation" \
+    --validation-fees 0 --issuance-fees 0 --verification-fees 0 \
+    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+    --fees "$FEES" --gas auto --node "$NODE_RPC" \
+    --output json -y 2>&1) || true
+  echo "$raw_output" >&2
+  local tx_hash
+  tx_hash=$(echo "$raw_output" | extract_tx_json | jq -r '.txhash // empty')
+  if [ -z "$tx_hash" ]; then
+    err "Failed to validate participant $participant_id. Raw output: $raw_output"
+    return 1
+  fi
+  ok "TX submitted: $tx_hash"
+  sleep 6
+
+  local state
+  state=$(veranad query pp get-participant "$participant_id" --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -r '.participant.op_state // empty' 2>/dev/null || echo "")
+  if [ "$state" != "VALIDATED" ]; then
+    err "Participant $participant_id is in state '${state:-unknown}', not VALIDATED"
+    return 1
+  fi
+  ok "Participant validated: id=$participant_id"
+}
+
 # Self-create a participant (OPEN mode only — no onboarding process). Echoes the
 # new participant id.
 # Usage: self_create_participant <corporation> <role> <validator_participant_id> <did>
