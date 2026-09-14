@@ -65,7 +65,10 @@ jobs:
         with:
           version: 'v1.29.9'
 
+      # The "deploy-web" step builds and deploys the application image only.
+      # It reads no chain state, so it needs neither the CLI nor an account.
       - name: Install veranad
+        if: inputs.step != 'deploy-web'
         run: |
           VERANAD_VERSION="v0.10.4"
           curl -sfL "https://github.com/verana-labs/verana-node/releases/download/${VERANAD_VERSION}/veranad-linux-amd64" \
@@ -77,6 +80,7 @@ jobs:
       # to organization-vs; the agent account becomes the vs_operator of this service's
       # Participant entries. [MOD-DE-MSG-5-2] makes the two mutually exclusive for one grantee.
       - name: Import accounts from mnemonics
+        if: inputs.step != 'deploy-web'
         env:
           OPERATOR_MNEMONIC: ${{ secrets.ORGANIZATION_VS_MNEMONIC }}
           AGENT_MNEMONIC: ${{ secrets.ISSUER_WEB_VS_AGENT_MNEMONIC }}
