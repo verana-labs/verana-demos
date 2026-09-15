@@ -187,6 +187,19 @@ jobs:
             exit 1
           }
 
+      # The Service credential onboarding step validates the flow through the admin API of
+      # organization-vs, so it needs this port-forward.
+      - name: Port-forward organization VS Agent
+        if: inputs.step == 'onboard-verifier' || inputs.step == 'all'
+        run: |
+          kubectl port-forward -n "${{ secrets.K8S_NAMESPACE }}" "svc/${VS_NAME}" 3000:3000 &
+          echo "ORG_PF_PID=$!" >> "$GITHUB_ENV"
+          sleep 5
+          curl -sf http://localhost:3000/v1/agent > /dev/null || {
+            echo "::error::Port-forward to organization VS-Agent failed"
+            exit 1
+          }
+
       # The agent holds only a VSOperatorAuthorization, so it cannot submit StartParticipantOP
       # itself; the Corporation operator provisions its Service HOLDER entry, and the agent then
       # reacts to the chain event and sends the onboarding request ([VSA-VTI-FLOW-OP-NEW]).
@@ -385,6 +398,7 @@ jobs:
         if: always()
         run: |
           [ -n "${CHILD_PF_PID:-}" ] && kill "$CHILD_PF_PID" 2>/dev/null || true
+          [ -n "${ORG_PF_PID:-}" ] && kill "$ORG_PF_PID" 2>/dev/null || true
           true
 
       - name: Summary
