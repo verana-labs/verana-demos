@@ -65,8 +65,9 @@ ingress:
     host: ""
 
 extraEnv:
+  # dev.59 accepts a level name only: trace, debug, info, warn, error or off.
   - name: AGENT_LOG_LEVEL
-    value: "3"
+    value: "info"
   - name: USE_CORS
     value: "true"
   - name: VERANA_ACCOUNT_MNEMONIC
