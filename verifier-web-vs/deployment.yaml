@@ -4,7 +4,7 @@
 # substitutes __NETWORK__, __VS_NAME__, __CHILD_VS_NAME__, __CORPORATION_ID__
 # and __ORG_VS_DID__ placeholders at deploy time.
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v2.0.0-dev.53
+chartVersion: v2.0.0-dev.59
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
@@ -19,11 +19,11 @@ publicDidMethod: "webvh"
 enablePublicApiSwagger: true
 
 # One URL receives every event, as one POST per event carrying the Events API
-# envelope. The chatbot serves it at /events — see verifier-web-vs/verifier-web/src/webhooks.ts.
+# envelope. The web app serves it at /events — see verifier-web-vs/verifier-web/src/routes.ts.
 eventsWebhookUrl: "http://verifier-web-app-__VS_NAME__:4003/events"
 
 # The agent classifies every Admin API request on the peer address of its TCP
-# connection, and it never reads a forwarding header. The chatbot reaches this
+# connection, and it never reads a forwarding header. The web app reaches this
 # admin API through the cluster Service, so the pod CIDR is trusted, and a
 # kubectl port-forward arrives on 127.0.0.1.
 #

@@ -43,10 +43,8 @@ async function main(): Promise<void> {
   app.listen(config.verifierPort, () => {
     console.log(`Web Verifier listening on port ${config.verifierPort}`);
     console.log(`  Open http://localhost:${config.verifierPort} in your browser`);
-    console.log(`Webhook endpoint:`);
-    console.log(
-      `  POST http://localhost:${config.verifierPort}/webhooks/message-received`
-    );
+    console.log(`Events endpoint:`);
+    console.log(`  POST http://localhost:${config.verifierPort}/events`);
   });
 
   // Graceful shutdown

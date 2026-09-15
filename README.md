@@ -29,9 +29,9 @@ ecs-ecosystem            ← Shared ECS authority (verana-deploy, not this repo)
   Its two credentials carry different names on purpose. The Organization credential names the legal entity, "Verana Example Organization". The Service credential names the service, "Verana Example Ecosystem", and that is the name an explorer shows for the Ecosystem this agent controls.
 - the controller of its own **"example"** Ecosystem and credential schema, which the child services onboard against.
 
-**Child services** run in `AGENT_MODE=delegated` against organization-vs. Delegated mode uses the onboarding process (`[VSA-VTI-FLOW-OP-NEW]`), not Direct Issuance, because the ECS Service schema sets `holder_onboarding_mode = ISSUER_ONBOARDING_PROCESS`. The agent holds only a `VSOperatorAuthorization`, so it cannot submit `StartParticipantOP` itself: the workflow provisions its Service HOLDER entry, the agent reacts to that chain event and sends the onboarding request, and organization-vs supplies the claims and validates. They then take their role on the "example" schema:
+**Child services** run in `AGENT_MODE=delegated` against organization-vs. Delegated mode uses the onboarding process (`[VSA-VTI-FLOW-OP-NEW]`), not Direct Issuance, because the ECS Service schema sets `holder_onboarding_mode = ISSUER_ONBOARDING_PROCESS`. The agent holds only a `VSOperatorAuthorization`, so it cannot submit `StartParticipantOP` itself: the workflow provisions its Service HOLDER entry, the agent reacts to that chain event and sends the onboarding request with its own claims, and organization-vs validates it. They then take their role on the "example" schema:
 
-- **Issuers** get an `StartParticipantOP(ISSUER)` against the "example" root, validated by organization-vs.
+- **Issuers** get a `StartParticipantOP(ISSUER)` against the "example" root. The Corporation operator validates it: the root is organization-vs's ECOSYSTEM participant, and the chain grants that role no `VSOperatorAuthorization`.
 - **Verifiers** get a VERIFIER participant self-created (OPEN mode) — one transaction, no handshake, no validation.
 
 All services discover the **AnonCreds credential definition** by querying `/resources?resourceType=anonCredsCredDef` on the public endpoint of the issuer.

@@ -5,18 +5,32 @@ import { SchemaInfo } from "./schema-reader";
 import { SessionStore } from "./session-store";
 import { Config } from "./config";
 
-interface MessageReceivedEvent {
-  timestamp?: string;
-  message: {
-    id?: string;
-    type?: string;
-    connectionId?: string;
-    state?: string;
-    threadId?: string;
-    [key: string]: unknown;
-  };
+/**
+ * Events API envelope. The agent delivers every event as one POST to
+ * EVENTS_WEBHOOK_URL. See the Events section of the VS Agent API document.
+ */
+interface EventEnvelope<T = Record<string, unknown>> {
+  id: string;
+  type: string;
+  timestamp: string;
+  data: T;
+}
+
+/**
+ * `didcomm.credential-exchanges.state-updated` — the credential exchange
+ * record plus previousState.
+ */
+interface CredentialExchangeRecord {
+  credentialExchangeId: string;
+  state: string;
+  previousState: string | null;
+  connectionId?: string;
+  errorMessage?: string;
   [key: string]: unknown;
 }
+
+const CREDENTIAL_EXCHANGE_STATE_UPDATED =
+  "didcomm.credential-exchanges.state-updated";
 
 export function createRoutes(
   client: VsAgentClient,
@@ -100,61 +114,52 @@ export function createRoutes(
     }
   });
 
-  // Webhook: message-received → track credential issuance completion
-  router.post(
-    "/webhooks/message-received",
-    async (req: Request, res: Response) => {
-      try {
-        const event = req.body as MessageReceivedEvent;
-        const msg = event.message;
-        const msgType = (msg.type || "").toLowerCase();
-
-        console.log(
-          `Webhook: message-received — type=${msgType} id=${msg.id} state=${msg.state || "n/a"}`
-        );
-
-        // Only handle credential-reception events
-        if (msgType !== "credential-reception") {
-          res.status(200).json({ ok: true });
-          return;
-        }
-
-        const credExId = msg.id || "";
-        const state = (msg.state || "").toLowerCase();
-        const session = store.getSessionByCredentialExchangeId(credExId);
-
-        if (!session) {
-          console.log(
-            `No pending session for credentialExchangeId: ${credExId}`
-          );
-          res.status(200).json({ ok: true });
-          return;
-        }
-
-        if (msg.connectionId) {
-          store.setConnectionId(session.sessionId, msg.connectionId);
-        }
-
-        if (state === "done") {
-          store.markIssued(session.sessionId);
-          console.log(`Credential issued for session ${session.sessionId}`);
-        } else if (state === "declined" || state === "abandoned") {
-          store.markError(
-            session.sessionId,
-            `Credential ${state} by holder`
-          );
-          console.log(
-            `Credential ${state} for session ${session.sessionId}`
-          );
-        }
-
+  // Events API: track the credential exchange of each session
+  router.post("/events", (req: Request, res: Response) => {
+    const event = req.body as EventEnvelope;
+    try {
+      // Connections, messages and indexer notifications need no action here.
+      if (event.type !== CREDENTIAL_EXCHANGE_STATE_UPDATED) {
         res.status(200).json({ ok: true });
-      } catch (error) {
-        console.error("Error handling message webhook:", error);
-        res.status(500).json({ error: "Internal server error" });
+        return;
       }
+
+      const record = event.data as unknown as CredentialExchangeRecord;
+      console.log(
+        `Event ${event.type} (${event.id}) — exchange=${record.credentialExchangeId} state=${record.state}`
+      );
+
+      const session = store.getSessionByCredentialExchangeId(
+        record.credentialExchangeId
+      );
+      if (!session) {
+        res.status(200).json({ ok: true });
+        return;
+      }
+
+      if (record.connectionId) {
+        store.setConnectionId(session.sessionId, record.connectionId);
+      }
+
+      if (record.state === "done") {
+        store.markIssued(session.sessionId);
+        console.log(`Credential issued for session ${session.sessionId}`);
+      } else if (record.state === "declined" || record.state === "abandoned") {
+        store.markError(
+          session.sessionId,
+          record.errorMessage || `Credential ${record.state} by holder`
+        );
+        console.log(
+          `Credential ${record.state} for session ${session.sessionId}`
+        );
+      }
+
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      console.error(`Error handling event ${event?.type}:`, error);
+      res.status(500).json({ error: "Internal server error" });
     }
-  );
+  });
 
   // Health check
   router.get("/health", (_req: Request, res: Response) => {

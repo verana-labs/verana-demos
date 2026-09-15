@@ -42,10 +42,8 @@ async function main(): Promise<void> {
   app.listen(config.issuerPort, () => {
     console.log(`Issuer Web listening on port ${config.issuerPort}`);
     console.log(`  Open http://localhost:${config.issuerPort} in your browser`);
-    console.log(`Webhook endpoint:`);
-    console.log(
-      `  POST http://localhost:${config.issuerPort}/webhooks/message-received`
-    );
+    console.log(`Events endpoint:`);
+    console.log(`  POST http://localhost:${config.issuerPort}/events`);
   });
 
   // Graceful shutdown

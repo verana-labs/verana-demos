@@ -5,25 +5,33 @@ import { SchemaInfo } from "./schema-reader";
 import { SessionStore } from "./session-store";
 import { Config } from "./config";
 
-interface WebhookEvent {
-  timestamp?: string;
-  message?: ProofMessage;
+/**
+ * Events API envelope. The agent delivers every event as one POST to
+ * EVENTS_WEBHOOK_URL. See the Events section of the VS Agent API document.
+ */
+interface EventEnvelope<T = Record<string, unknown>> {
+  id: string;
+  type: string;
+  timestamp: string;
+  data: T;
+}
+
+/**
+ * `didcomm.presentations.state-updated` — the presentation record plus
+ * previousState. The agent verifies the presentation and reports the revealed
+ * attributes.
+ */
+interface PresentationRecord {
+  proofExchangeId: string;
+  state: string;
+  previousState: string | null;
+  verified: boolean;
+  claims: { name: string; value: string }[];
+  errorMessage?: string;
   [key: string]: unknown;
 }
 
-interface ProofMessage {
-  type?: string;
-  connectionId?: string;
-  id?: string;
-  threadId?: string;
-  claims?: Record<string, unknown>;
-  submittedProofItems?: Array<{
-    proofExchangeId?: string;
-    claims?: Record<string, unknown> | Array<{ name: string; value: string }>;
-    [key: string]: unknown;
-  }>;
-  [key: string]: unknown;
-}
+const PRESENTATION_STATE_UPDATED = "didcomm.presentations.state-updated";
 
 export function createRoutes(
   client: VsAgentClient,
@@ -82,52 +90,64 @@ export function createRoutes(
 
     if (session.status === "verified") {
       res.json({ status: "verified", attributes: session.attributes });
+    } else if (session.status === "error") {
+      res.json({ status: "error", error: session.errorMessage });
     } else {
       res.json({ status: "pending" });
     }
   });
 
-  // Webhook: message-received (proof presentation, etc.)
-  router.post(
-    "/webhooks/message-received",
-    (req: Request, res: Response) => {
-      try {
-        const event = req.body as WebhookEvent;
-        console.log("Webhook: message-received", JSON.stringify(event).slice(0, 500));
+  // Events API: record the outcome of the presentation of each session
+  router.post("/events", (req: Request, res: Response) => {
+    const event = req.body as EventEnvelope;
+    try {
+      // Connections, messages and indexer notifications need no action here.
+      if (event.type !== PRESENTATION_STATE_UPDATED) {
+        res.status(200).json({ ok: true });
+        return;
+      }
 
-        // VS-Agent wraps payload as { timestamp, message: { ... } }
-        const msg = event.message || (event as unknown as ProofMessage);
+      const record = event.data as unknown as PresentationRecord;
+      console.log(
+        `Event ${event.type} (${event.id}) — exchange=${record.proofExchangeId} state=${record.state}`
+      );
 
-        // proofExchangeId is inside submittedProofItems[0]
-        const proofExId =
-          msg.submittedProofItems?.[0]?.proofExchangeId ||
-          msg.id ||
-          msg.threadId ||
-          "";
-        const session = store.getSessionByProofExchangeId(proofExId);
+      const session = store.getSessionByProofExchangeId(record.proofExchangeId);
+      if (!session) {
+        res.status(200).json({ ok: true });
+        return;
+      }
 
-        if (!session) {
-          console.warn(
-            `No session found for proofExchangeId: ${proofExId}`
-          );
-          res.status(200).json({ ok: true });
-          return;
-        }
-
-        const claims = extractClaims(msg);
+      // The agent sets `verified` when it receives the presentation. A
+      // presentation that fails the check, the trust decision included, ends
+      // `abandoned` with an errorMessage.
+      if (record.state === "done" && record.verified) {
+        const claims = toClaimMap(record.claims);
         store.markVerified(session.sessionId, claims);
         console.log(
           `Session ${session.sessionId} verified with claims:`,
           claims
         );
-
-        res.status(200).json({ ok: true });
-      } catch (error) {
-        console.error("Error handling proof webhook:", error);
-        res.status(500).json({ error: "Internal server error" });
+      } else if (
+        record.state === "done" ||
+        record.state === "abandoned" ||
+        record.state === "declined"
+      ) {
+        const reason =
+          record.errorMessage ||
+          (record.state === "done"
+            ? "The presentation did not verify"
+            : `Presentation ${record.state}`);
+        store.markError(session.sessionId, reason);
+        console.warn(`Session ${session.sessionId} failed: ${reason}`);
       }
+
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      console.error(`Error handling event ${event?.type}:`, error);
+      res.status(500).json({ error: "Internal server error" });
     }
-  );
+  });
 
   // Health check
   router.get("/health", (_req: Request, res: Response) => {
@@ -140,37 +160,16 @@ export function createRoutes(
   return router;
 }
 
-function extractClaims(msg: ProofMessage): Record<string, string> {
+function toClaimMap(
+  claims: { name: string; value: string }[] | undefined
+): Record<string, string> {
   const result: Record<string, string> = {};
-
-  if (msg.submittedProofItems && msg.submittedProofItems.length > 0) {
-    for (const item of msg.submittedProofItems) {
-      if (!item.claims) continue;
-      // claims can be an array of {name, value} or a record
-      if (Array.isArray(item.claims)) {
-        for (const c of item.claims) {
-          result[c.name] = String(c.value);
-        }
-      } else {
-        for (const [key, val] of Object.entries(item.claims)) {
-          if (val && typeof val === "object" && "value" in val) {
-            result[key] = String((val as { value: unknown }).value);
-          } else {
-            result[key] = String(val);
-          }
-        }
-      }
-    }
-  } else if (msg.claims) {
-    for (const [key, val] of Object.entries(msg.claims)) {
-      if (val && typeof val === "object" && "value" in val) {
-        result[key] = String((val as { value: unknown }).value);
-      } else {
-        result[key] = String(val);
-      }
-    }
+  for (const claim of claims ?? []) {
+    result[claim.name] = String(claim.value);
   }
-
+  if (Object.keys(result).length === 0) {
+    console.warn("The verified presentation revealed no attribute");
+  }
   return result;
 }
 
@@ -342,6 +341,11 @@ function renderPage(serviceName: string, schemaTitle: string): string {
             clearInterval(pollTimer);
             pollTimer = null;
             showResult(data.attributes);
+          } else if (data.status === 'error') {
+            clearInterval(pollTimer);
+            pollTimer = null;
+            qrContainer.innerHTML = '';
+            statusText.textContent = 'Verification failed: ' + (data.error || 'unknown error');
           }
         } catch (err) {
           console.error('Poll error:', err);
