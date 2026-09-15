@@ -109,7 +109,6 @@ jobs:
           # Read the did:webvh from the log. /.well-known/did.json answers with the
           # did:web alias, and the parent registers its participants under the
           # did:webvh, so the alias finds none of them.
-          source common/common.sh
           ORG_DID=$(fetch_did_from_log "$ORG_PUBLIC_URL")
           if [ -z "$ORG_DID" ]; then
             echo "::error::Could not fetch organization-vs DID from ${ORG_PUBLIC_URL}/.well-known/did.jsonl. Is organization-vs deployed?"
