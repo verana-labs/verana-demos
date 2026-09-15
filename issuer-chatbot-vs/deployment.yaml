@@ -4,9 +4,7 @@
 # substitutes __NETWORK__, __VS_NAME__, __CHILD_VS_NAME__, __CORPORATION_ID__
 # and __ORG_VS_DID__ placeholders at deploy time.
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-# TEMPORARY: a build of vs-agent#703, matching the ECS services on devnet.
-# Move back to a dev release once that PR merges.
-chartVersion: v2.0.0-pr703.3
+chartVersion: v2.0.0-dev.59
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
@@ -67,8 +65,9 @@ ingress:
     host: ""
 
 extraEnv:
+  # dev.59 accepts a level name only: trace, debug, info, warn, error or off.
   - name: AGENT_LOG_LEVEL
-    value: "3"
+    value: "info"
   - name: USE_CORS
     value: "true"
   - name: VERANA_ACCOUNT_MNEMONIC

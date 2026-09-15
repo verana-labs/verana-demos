@@ -6,9 +6,7 @@
 # after running the "bootstrap-corporation" workflow step once).
 # Example: vs/devnet-example → __NETWORK__=devnet, __VS_NAME__=example
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-# TEMPORARY: a build of vs-agent#703, matching the ECS services on devnet.
-# Move back to a dev release once that PR merges.
-chartVersion: v2.0.0-pr703.3
+chartVersion: v2.0.0-dev.59
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
@@ -67,8 +65,9 @@ ingress:
     host: ""
 
 extraEnv:
+  # dev.59 accepts a level name only: trace, debug, info, warn, error or off.
   - name: AGENT_LOG_LEVEL
-    value: "3"
+    value: "info"
   - name: USE_CORS
     value: "true"
   # This agent's ONLY account. It is the vs_operator of the Participant entries
