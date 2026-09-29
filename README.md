@@ -87,7 +87,7 @@ Workflows are numbered to indicate deployment order. **Run them in order** when 
 
 Only workflow 1 bootstraps a Corporation, and only on a new ecosystem: the agent needs `VERANA_CORPORATION_ID` at boot, but the Corporation exists only once that step has run, so it prints the new id for `organization-vs/config.env`. The children have no such step — their `deploy` resolves the same Corporation from organization-vs's DID.
 
-The `onboard-*` step of a child does three things in order: it provisions the Service HOLDER entry, validates that onboarding on organization-vs with the Service claims, and then takes the ISSUER or VERIFIER role on the "example" schema.
+The `onboard-*` step of a child does four things in order: it provisions the Service HOLDER entry, validates that onboarding on organization-vs with the Service claims, takes the ISSUER or VERIFIER role on the "example" schema, and then triggers the trust resolver again. The chain evaluates the service at the first event that names it, before the DID Document serves the Service credential, and an untrusted answer has no expiry. The last step waits for the presentation and sends `TriggerResolver` from the Corporation operator, then polls the indexer until it answers `"trusted": true`. Workflow 1 does the same for the Organization credential of organization-vs.
 
 ### Deployment
 
@@ -139,7 +139,7 @@ curl -s -X POST https://idx.devnet.verana.network/v4/verifiable-trust/resolve \
 
 ## Shared Code
 
-- `common/common.sh` — Shared shell helpers: logging, network config, funding, transaction submission, group proposals, Corporation creation and grant checks (`ensure_operator_authorization`), Ecosystem / credential schema / root participant creation, `StartParticipantOP` and `SelfCreateParticipant`, participant and schema discovery, `resolve_corporation_for_did`, `build_service_claims`, the onboarding-flow validation calls (`validate_pending_flow` and `set_participant_validated`), and the VTJSC lookup that replaces the removed v1 route (`fetch_vtjsc_credential_id`).
+- `common/common.sh` — Shared shell helpers: logging, network config, funding, transaction submission, group proposals, Corporation creation and grant checks (`ensure_operator_authorization`), Ecosystem / credential schema / root participant creation, `StartParticipantOP` and `SelfCreateParticipant`, participant and schema discovery, `resolve_corporation_for_did`, `build_service_claims`, the onboarding-flow validation calls (`validate_pending_flow` and `set_participant_validated`), the VTJSC lookup that replaces the removed v1 route (`fetch_vtjsc_credential_id`), and the trust resolution helpers (`wait_for_linked_presentation`, `trigger_resolver` and `wait_for_trusted`).
 - `common/vt-schema/` — Shared TypeScript module (`@verana-demos/vt-schema`) used by the four applications to discover the custom schema. v4 publishes a VTJSC as `#vpr-schemas-<schemaId>-vtjsc-vp`, named after the numeric credential schema id, and points at its JSON Schema with `vpr:verana:<chain-id>:cs:<schemaId>`, which the module resolves against the indexer of that same chain. Each application depends on it through `file:../../common/vt-schema`, so their Docker builds take the repository root as context.
 
 ## Playground
@@ -148,6 +148,7 @@ The playground (`playground/`) is a Next.js + TailwindCSS single-page applicatio
 
 - **Framework:** Next.js (standalone output) + TailwindCSS
 - **API proxies:** Server-side API routes forward requests to internal cluster services (issuer-chatbot, verifier-chatbot, verifier-web). The chatbot route answers with the public DID of the agent, because the v2 API creates no invitation
+- **Live network data:** `/api/ecosystem` reads the Ecosystem, the credential schema and the Participant tree from the v4 indexer. `/api/pot/<service>` resolves each service with `POST /v4/verifiable-trust/resolve` and shows its trust status, its Service and Organization credential claims, and its Participant roles. The standalone v1 resolver is gone
 - **Issuer Web:** Opens in a new tab (the user fills a form, then scans the QR code generated on that page)
 - **Deployment:** Workflow #6 builds a Docker image and deploys it to the same namespace as the other services
 

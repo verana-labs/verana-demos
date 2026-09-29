@@ -310,6 +310,39 @@ jobs:
             fi
           fi
 
+      # The resolver evaluates the service at the first chain event that names it.
+      # That event comes before the DID Document serves the credential, and an
+      # untrusted answer has no expiry, so the resolver never repeats it by itself.
+      # Ask for a new evaluation once the presentation is online. The Corporation
+      # operator sends the message for the HOLDER entry of this service.
+      - name: Re-trigger the trust resolver
+        if: inputs.step == 'onboard-issuer' || inputs.step == 'all'
+        run: |
+          if [ -z "${CORPORATION_ID:-}" ]; then
+            echo "::error::CORPORATION_ID is not set; the 'deploy' step resolves it from organization-vs."
+            exit 1
+          fi
+          source common/common.sh
+          set_network_vars "$NETWORK"
+          resolve_corporation "$CORPORATION_ID"
+
+          CHILD_PUBLIC_URL="https://issuer-chatbot-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
+          CHILD_DID=$(fetch_did_from_log "$CHILD_PUBLIC_URL")
+          if [ -z "$CHILD_DID" ]; then
+            echo "::error::Could not read the DID of $CHILD_PUBLIC_URL"
+            exit 1
+          fi
+          wait_for_linked_presentation "$CHILD_PUBLIC_URL" "vpr-schemas-service-vtc-vp"
+
+          ECS_SERVICE_SCHEMA_ID=$(find_ecs_schema_id "$ECS_ECOSYSTEM_DID" "ServiceCredential")
+          HOLDER_ID=$(find_participant_with_vs_operator "$ECS_SERVICE_SCHEMA_ID" "$PP_ROLE_HOLDER" "$CHILD_DID" | cut -f1)
+          if [ -z "$HOLDER_ID" ]; then
+            echo "::error::$CHILD_DID holds no Service HOLDER entry"
+            exit 1
+          fi
+          trigger_resolver "$HOLDER_ID"
+          wait_for_trusted "$CHILD_DID"
+
       # -----------------------------------------------------------------------
       # DEPLOY-CHATBOT: Build and deploy Issuer Chatbot service
       # -----------------------------------------------------------------------

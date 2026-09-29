@@ -1189,3 +1189,76 @@ has_completed_flow() {
               or . == "AWAITING_VALIDATION_TX" or . == "VALIDATION_TX_SUBMITTED")] | length' 2>/dev/null || echo "0")
   [ "${match:-0}" -gt 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Trust resolution helpers
+# ---------------------------------------------------------------------------
+
+# Wait until the DID Document of a service serves a LinkedVerifiablePresentation
+# whose id ends in the given fragment. The agent writes the DID log entry a few
+# seconds before the document serves the presentation, so a caller must not
+# trigger the resolver on the log entry alone.
+# Usage: wait_for_linked_presentation <public_base_url> <fragment> [attempts]
+wait_for_linked_presentation() {
+  local base_url=$1
+  local fragment=$2
+  local attempts="${3:-18}"
+  local i
+  for i in $(seq 1 "$attempts"); do
+    if curl -sf "${base_url}/.well-known/did.json" 2>/dev/null \
+         | jq -e --arg f "#${fragment}" '
+             any(.service[]?; .type == "LinkedVerifiablePresentation" and (.id | endswith($f)))' \
+         > /dev/null 2>&1; then
+      ok "DID Document serves #${fragment}"
+      return 0
+    fi
+    sleep 10
+  done
+  err "DID Document at ${base_url} does not serve #${fragment} after ${attempts} attempts"
+  return 1
+}
+
+# Ask the chain to evaluate a participant again. The resolver keeps an untrusted
+# answer for ever, because that answer has no expiry. A service that publishes
+# its credential after the first evaluation stays untrusted until somebody sends
+# this message. The Corporation operator (USER_ACC) may send it for every
+# participant of its Corporation.
+# Usage: trigger_resolver <participant_id>
+trigger_resolver() {
+  local participant_id=$1
+  log "Triggering the trust resolver for participant ${participant_id}..."
+  local raw_output
+  raw_output=$(veranad tx pp trigger-resolver "$participant_id" \
+    --corporation "$CORPORATION" \
+    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
+    --output json -y 2>&1) || true
+  local tx_hash
+  tx_hash=$(echo "$raw_output" | extract_tx_json | jq -r 'select(.code == 0) | .txhash // empty' 2>/dev/null)
+  if [ -z "$tx_hash" ]; then
+    err "TriggerResolver failed. Raw output:"
+    echo "$raw_output" >&2
+    return 1
+  fi
+  ok "TriggerResolver submitted: $tx_hash"
+}
+
+# Wait until the indexer answers "trusted": true for a DID.
+# Usage: wait_for_trusted <did> [attempts]
+wait_for_trusted() {
+  local did=$1
+  local attempts="${2:-12}"
+  local i answer
+  for i in $(seq 1 "$attempts"); do
+    answer=$(curl -sf -X POST "${INDEXER_URL}/v4/verifiable-trust/resolve" \
+      -H 'Content-Type: application/json' \
+      -d "$(jq -cn --arg did "$did" '{did: $did}')" 2>/dev/null) || answer=""
+    if [ "$(echo "$answer" | jq -r '.trusted // false' 2>/dev/null)" = "true" ]; then
+      ok "Trusted (evaluated at $(echo "$answer" | jq -r '.evaluatedAtTime'))"
+      return 0
+    fi
+    sleep 10
+  done
+  err "The indexer still answers untrusted for ${did}: ${answer}"
+  return 1
+}
