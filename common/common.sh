@@ -822,11 +822,17 @@ set_participant_validated() {
     return 1
   fi
   ok "TX submitted: $tx_hash"
-  sleep 6
 
-  local state
-  state=$(veranad query pp get-participant "$participant_id" --node "$NODE_RPC" --output json 2>/dev/null \
-    | jq -r '.participant.op_state // empty' 2>/dev/null || echo "")
+  # A fixed wait loses the race when a block is slow, and the participant then
+  # looks unvalidated although the transaction lands a second later. Poll.
+  local state=""
+  local i
+  for i in $(seq 1 15); do
+    sleep 4
+    state=$(veranad query pp get-participant "$participant_id" --node "$NODE_RPC" --output json 2>/dev/null \
+      | jq -r '.participant.op_state // empty' 2>/dev/null || echo "")
+    [ "$state" = "VALIDATED" ] && break
+  done
   if [ "$state" != "VALIDATED" ]; then
     err "Participant $participant_id is in state '${state:-unknown}', not VALIDATED"
     return 1
@@ -1099,17 +1105,28 @@ validate_pending_flow() {
   # The v2 API spells these keys peerDid and schemaId. It drops an unknown key
   # in silence and answers with an unfiltered page, so a wrong name gives a
   # flow that belongs to another peer.
-  local query="role=validator&flowState=AWAITING_OR&peerDid=$(printf '%s' "$peer_did" | jq -sRr @uri)"
+  #
+  # Do NOT filter on AWAITING_OR. The agent drives the flow on its own, so by the
+  # time this runs the validator often shows VALIDATING already, and a filter on
+  # one state then reports "no flow" for a flow that only waits for this call.
+  # Accept every state that validate accepts, and take the newest match.
+  local query="role=validator&peerDid=$(printf '%s' "$peer_did" | jq -sRr @uri)"
   [ -n "$schema_id" ] && query="${query}&schemaId=${schema_id}"
 
   local flows session_id
   flows=$(curl -sf "${admin_api}/v2/vt/flows?${query}" 2>/dev/null)
-  session_id=$(echo "$flows" | jq -r '(.items // [])[0].participantSessionId // empty' 2>/dev/null)
+  session_id=$(echo "$flows" | jq -r '
+    [(.items // [])[]
+     | select(.flowState == "AWAITING_OR" or .flowState == "VALIDATING"
+              or .flowState == "OOB_PENDING" or .flowState == "VALIDATED_PENDING_CLAIMS"
+              or .flowState == "AWAITING_VALIDATION_TX" or .flowState == "VALIDATION_TX_FAILED")]
+    | sort_by(.lastEventAt // .createdAt) | last | .participantSessionId // empty' 2>/dev/null)
   if [ -z "$session_id" ]; then
-    err "No pending AWAITING_OR flow found from $peer_did on $admin_api"
+    err "No validatable flow found from $peer_did on $admin_api"
+    err "States seen: $(echo "$flows" | jq -r '[(.items // [])[].flowState] | join(", ")' 2>/dev/null)"
     return 1
   fi
-  ok "Found pending flow: $session_id"
+  ok "Found flow awaiting validation: $session_id"
 
   # Validate checks the claims against the schema and records the fee terms. It
   # answers submission=OPERATOR when the agent holds no authorization on the
@@ -1143,8 +1160,21 @@ has_completed_flow() {
   local flows
   flows=$(curl -sf "${admin_api}/v2/vt/flows?${query}" 2>/dev/null) || return 1
   # The v2 record names the state flowState, and a list answers with a page.
+  #
+  # Treat an in-flight validation as done too. The validator decided already, and
+  # the chain or the credential exchange carries the flow from here, so a second
+  # validate call would only repeat the decision.
+  #
+  # VALIDATION_TX_FAILED is deliberately absent: a failed transaction needs a new
+  # decision, so validate_pending_flow claims that state instead.
+  #
+  # AWAITING_VALIDATION_TX appears in both functions. The caller checks this one
+  # first, so a flow that already waits for its transaction counts as done and no
+  # second decision goes out.
   local match
   match=$(echo "$flows" | jq -r '
-    [(.items // [])[] | .flowState | select(. == "COMPLETED" or . == "VALIDATED")] | length' 2>/dev/null || echo "0")
+    [(.items // [])[] | .flowState
+     | select(. == "COMPLETED" or . == "VALIDATED" or . == "CRED_OFFERED"
+              or . == "AWAITING_VALIDATION_TX" or . == "VALIDATION_TX_SUBMITTED")] | length' 2>/dev/null || echo "0")
   [ "${match:-0}" -gt 0 ]
 }
