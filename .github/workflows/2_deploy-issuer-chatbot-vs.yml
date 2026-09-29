@@ -244,16 +244,22 @@ jobs:
             exit 1
           fi
 
-          # The agent needs a moment to react to its own StartParticipantOP and send the request.
+          # Wait for the agent to react to its own StartParticipantOP. Match any
+          # state: the agent drives the flow onward by itself, so a poll for one
+          # transient state waits the full timeout on a fast agent.
           for _ in $(seq 1 12); do
-            if curl -sf "http://localhost:3000/v2/vt/flows?role=validator&flowState=AWAITING_OR" \
+            if curl -sf "http://localhost:3000/v2/vt/flows?role=validator" \
                  | jq -e --arg did "$CHILD_DID" 'any(.items[]; .peerDid == $did)' > /dev/null 2>&1; then
               break
             fi
             sleep 10
           done
 
-          if ! validate_pending_flow "http://localhost:3000" "$CHILD_DID"; then
+          # A completed onboarding is not an error: these steps are re-run often,
+          # and the validator keeps the finished flow. Skip instead of failing.
+          if has_completed_flow "http://localhost:3000" "$CHILD_DID"; then
+            ok "Already validated — skipping"
+          elif ! validate_pending_flow "http://localhost:3000" "$CHILD_DID"; then
             echo "::error::Could not validate the Service credential onboarding for $CHILD_DID"
             exit 1
           fi
