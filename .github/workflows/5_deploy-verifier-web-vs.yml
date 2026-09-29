@@ -101,7 +101,7 @@ jobs:
           echo "Agent account (vs_operator): ${AGENT_ADDR}"
 
       - name: Resolve organization-vs DID
-        if: inputs.step == 'deploy' || inputs.step == 'all'
+        if: inputs.step == 'deploy' || inputs.step == 'onboard-verifier' || inputs.step == 'all'
         run: |
           source common/common.sh
           set_network_vars "$NETWORK"
