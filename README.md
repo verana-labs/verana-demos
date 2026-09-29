@@ -1,6 +1,6 @@
 # Verana Demos
 
-Demo ecosystem with five Verifiable Services and an interactive playground, deployed via GitHub Actions to Kubernetes. Targets **Verana v4** implementation, currently on devnet.
+Demo ecosystem with five Verifiable Services and an interactive playground, deployed via GitHub Actions to Kubernetes. Targets **Verana v4** implementation, currently on devnet. It runs vs-agent `v2.0.0-dev.72` against `veranad v0.10.5`.
 
 ## Architecture
 
@@ -19,6 +19,8 @@ ecs-ecosystem            ← Shared ECS authority (verana-deploy, not this repo)
 **One operator account, one agent account per service.** The Corporation operator (`USER_ACC`, organization-vs's) holds the blanket `OperatorAuthorization` and signs every provisioning transaction. Each service has its own account (`AGENT_ACC`), the `vs_operator` of its Participant entries, which lets its agent send `TriggerResolver` and `CreateOrUpdateParticipantSession` on its own behalf. The chain forbids one account from holding both authorization types, so they must be different accounts.
 
 **The agent reacts to chain events.** Scripts no longer drive credential issuance through the admin API. They create the on-chain objects and the Participant entries; the agent notices, publishes its VTJSCs, self-issues what it may, and answers the onboarding processes.
+
+**The applications use the v2 administration API.** vs-agent `v2.0.0-dev.71` removed the v1 API. Every endpoint now lives under `/v2`, a list answers with `{items, nextCursor}`, and `GET /v2/agent/info` reports the DID in a field named `did`. No endpoint creates a bare connection invitation any more. A wallet dials the public DID of the agent instead, and a credential offer or a presentation request supplies the `shortUrl` that a QR code carries.
 
 **Each agent composes its own ECS claims.** The `ECS_CLAIMS_*` variables of a container hold the claims of the credentials that agent will carry ([VSA-VTI-CFG-ENV-ECS]), and the agent sends them on the onboarding request it opens. A validator signs what it receives, so no script builds a claim set any more. A standalone agent reads the organization, persona and service groups; a delegated agent reads only the service group. The agent derives every `*DigestSri` claim from the matching `*Uri` claim, so each URI must be reachable.
 
@@ -137,7 +139,7 @@ curl -s -X POST https://idx.devnet.verana.network/v4/verifiable-trust/resolve \
 
 ## Shared Code
 
-- `common/common.sh` — Shared shell helpers: logging, network config, funding, transaction submission, group proposals, Corporation creation and grant checks (`ensure_operator_authorization`), Ecosystem / credential schema / root participant creation, `StartParticipantOP` and `SelfCreateParticipant`, participant and schema discovery, `resolve_corporation_for_did`, `build_service_claims`, and the onboarding-flow validation calls (`validate_pending_flow`).
+- `common/common.sh` — Shared shell helpers: logging, network config, funding, transaction submission, group proposals, Corporation creation and grant checks (`ensure_operator_authorization`), Ecosystem / credential schema / root participant creation, `StartParticipantOP` and `SelfCreateParticipant`, participant and schema discovery, `resolve_corporation_for_did`, `build_service_claims`, the onboarding-flow validation calls (`validate_pending_flow` and `set_participant_validated`), and the VTJSC lookup that replaces the removed v1 route (`fetch_vtjsc_credential_id`).
 - `common/vt-schema/` — Shared TypeScript module (`@verana-demos/vt-schema`) used by the four applications to discover the custom schema. v4 publishes a VTJSC as `#vpr-schemas-<schemaId>-vtjsc-vp`, named after the numeric credential schema id, and points at its JSON Schema with `vpr:verana:<chain-id>:cs:<schemaId>`, which the module resolves against the indexer of that same chain. Each application depends on it through `file:../../common/vt-schema`, so their Docker builds take the repository root as context.
 
 ## Playground
@@ -145,7 +147,7 @@ curl -s -X POST https://idx.devnet.verana.network/v4/verifiable-trust/resolve \
 The playground (`playground/`) is a Next.js + TailwindCSS single-page application that guides newcomers through the Verifiable Trust ecosystem. It lets users issue and present credentials in real time using the demo services above.
 
 - **Framework:** Next.js (standalone output) + TailwindCSS
-- **API proxies:** Server-side API routes forward requests to internal cluster services (issuer-chatbot, verifier-chatbot, verifier-web)
+- **API proxies:** Server-side API routes forward requests to internal cluster services (issuer-chatbot, verifier-chatbot, verifier-web). The chatbot route answers with the public DID of the agent, because the v2 API creates no invitation
 - **Issuer Web:** Opens in a new tab (the user fills a form, then scans the QR code generated on that page)
 - **Deployment:** Workflow #6 builds a Docker image and deploys it to the same namespace as the other services
 

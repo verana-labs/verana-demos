@@ -42,5 +42,9 @@ echo "Starting Web Verifier..."
 echo "  Open http://localhost:$VERIFIER_PORT in your browser"
 echo ""
 cd "$VERIFIER_DIR"
+# The application discovers the schema from the DID document of organization-vs.
+# It reads ORG_VS_PUBLIC_URL, or ORG_VS_PUBLIC_PORT for a run on this host.
 export VS_AGENT_ADMIN_URL VERIFIER_PORT ISSUER_VS_PUBLIC_URL
+export ORG_VS_PUBLIC_URL="${ORG_VS_PUBLIC_URL:-}"
+export ORG_VS_PUBLIC_PORT="${ORG_VS_PUBLIC_PORT:-}"
 exec npx tsx src/index.ts

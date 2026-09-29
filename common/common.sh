@@ -50,7 +50,7 @@ set_network_vars() {
       # The shared ECS Ecosystem VS Agent (verana-deploy/scripts/ecs-ecosystem).
       # It defines the ECS schemas. It does NOT issue the Organization
       # credentials — see ECS_ORG_ISSUER_* below.
-      ECS_ECOSYSTEM_DID="${ECS_ECOSYSTEM_DID:-did:webvh:QmbDoPbwb4Nu2VLm2oSEUrnMokAzr5fCPu4c13Ysmov6SH:ecs-ecosystem.devnet.verana.network}"
+      ECS_ECOSYSTEM_DID="${ECS_ECOSYSTEM_DID:-did:webvh:QmVWnZrJ3B5cR3oGhdBHcbE6YhYe9FHRGwaGxY7c2wPMFN:ecs-ecosystem.devnet.verana.network}"
       # Port-forward before use: kubectl port-forward -n vna-devnet-1 svc/ecs-ecosystem 3100:3000
       ECS_ECOSYSTEM_ADMIN_API="${ECS_ECOSYSTEM_ADMIN_API:-http://localhost:3100}"
       # The Verifiable Service the ECS Ecosystem corporation assigned the
@@ -279,7 +279,7 @@ wait_for_agent() {
   local max_retries=${2:-30}
   local i=0
   while [ $i -lt "$max_retries" ]; do
-    if curl -sf "${admin_api}/v1/agent" > /dev/null 2>&1; then
+    if curl -sf "${admin_api}/v2/agent/health/ready" > /dev/null 2>&1; then
       return 0
     fi
     sleep 2
@@ -751,9 +751,12 @@ start_participant_op() {
   # correct them later is to revoke the participant and create it again.
   local vsoa_args=()
   if [ -n "$vs_operator" ]; then
+    # v0.10.5 rejects a fee grant that has no positive fee spend limit. The chain
+    # applies the limit as one allowance for each de vs_operator_fee_period (24h).
     vsoa_args=(--vs-operator "$vs_operator"
                --vs-operator-authz-msg-types "$vs_operator_msg_types"
-               --vs-operator-authz-with-feegrant)
+               --vs-operator-authz-with-feegrant
+               --vs-operator-authz-fee-spend-limit "${VSOA_FEE_SPEND_LIMIT:-50000000uvna}")
   fi
 
   log "Starting participant OP (role=$role) against validator $validator_participant_id..."
@@ -792,7 +795,8 @@ start_participant_op() {
 # operator or a vs_operator delegated ON THE VALIDATOR PARTICIPANT, and
 # vsoaPermittedMsgTypes grants no message type to the ECOSYSTEM role. An agent
 # therefore never gets the authority to validate against an Ecosystem it
-# controls, and POST /v1/vt/flows/<id>/validate answers HTTP 500.
+# controls. POST /v2/vt/flows/<id>/validate therefore answers submission=OPERATOR
+# and broadcasts nothing, which is why this function must send the transaction.
 #
 # The applicant agent completes the credential exchange on its own, because it
 # reacts to the SetParticipantOPToValidated event from the indexer.
@@ -844,9 +848,12 @@ self_create_participant() {
 
   local vsoa_args=()
   if [ -n "$vs_operator" ]; then
+    # v0.10.5 rejects a fee grant that has no positive fee spend limit. The chain
+    # applies the limit as one allowance for each de vs_operator_fee_period (24h).
     vsoa_args=(--vs-operator "$vs_operator"
                --vs-operator-authz-msg-types "$vs_operator_msg_types"
-               --vs-operator-authz-with-feegrant)
+               --vs-operator-authz-with-feegrant
+               --vs-operator-authz-fee-spend-limit "${VSOA_FEE_SPEND_LIMIT:-50000000uvna}")
   fi
 
   log "Self-creating participant (role=$role) against validator $validator_participant_id..."
@@ -1017,8 +1024,38 @@ discover_custom_schema_id() {
   echo "$schema_id"
 }
 
+# Read the JSON Schema Credential id of a credential schema from the DID
+# Document of its Ecosystem controller.
+#
+# The v2 API has no route that lists these credentials. The controller publishes
+# one LinkedVerifiablePresentation for each schema, named
+# #vpr-schemas-<schema_id>-vtjsc-vp, and that presentation carries the credential.
+# Usage: fetch_vtjsc_credential_id <did_doc_url> <schema_id>
+fetch_vtjsc_credential_id() {
+  local did_doc_url=$1
+  local schema_id=$2
+
+  local vp_url
+  vp_url=$(curl -sf "$did_doc_url" 2>/dev/null \
+    | jq -r --arg frag "vpr-schemas-${schema_id}-vtjsc-vp" '
+        .service[]? | select(.type == "LinkedVerifiablePresentation")
+        | select(.id | endswith($frag)) | .serviceEndpoint' 2>/dev/null | head -1)
+  if [ -z "$vp_url" ]; then
+    err "No VTJSC service for schema $schema_id in $did_doc_url"
+    return 1
+  fi
+
+  local cred_id
+  cred_id=$(curl -sf "$vp_url" 2>/dev/null | jq -r '.verifiableCredential[0].id // empty' 2>/dev/null)
+  if [ -z "$cred_id" ]; then
+    err "The presentation at $vp_url carries no credential id"
+    return 1
+  fi
+  echo "$cred_id"
+}
+
 # ---------------------------------------------------------------------------
-# vt-flow validator helper (/v1/vt/flows) — verified against the vs-agent source
+# vt-flow validator helper (/v2/vt/flows) — verified against the vs-agent source
 # (VtFlowsController.ts): unauthenticated on the internal admin listener.
 # ---------------------------------------------------------------------------
 
@@ -1059,33 +1096,39 @@ validate_pending_flow() {
   local schema_id="${3:-}"
 
   log "Looking up pending vt-flow from $peer_did on $admin_api..."
-  local query="role=validator&flowState=AWAITING_OR&peerDID=$(printf '%s' "$peer_did" | jq -sRr @uri)"
-  [ -n "$schema_id" ] && query="${query}&schema_id=${schema_id}"
+  # The v2 API spells these keys peerDid and schemaId. It drops an unknown key
+  # in silence and answers with an unfiltered page, so a wrong name gives a
+  # flow that belongs to another peer.
+  local query="role=validator&flowState=AWAITING_OR&peerDid=$(printf '%s' "$peer_did" | jq -sRr @uri)"
+  [ -n "$schema_id" ] && query="${query}&schemaId=${schema_id}"
 
-  local flows
-  flows=$(curl -sf "${admin_api}/v1/vt/flows?${query}" 2>/dev/null)
-  if [ -z "$flows" ] || [ "$flows" = "[]" ]; then
-    err "No pending AWAITING_OR flow found from $peer_did on $admin_api"
-    return 1
-  fi
-
-  local session_id
-  session_id=$(echo "$flows" | jq -r '.[0].participantSessionId // .[0].participant_session_id // empty')
+  local flows session_id
+  flows=$(curl -sf "${admin_api}/v2/vt/flows?${query}" 2>/dev/null)
+  session_id=$(echo "$flows" | jq -r '(.items // [])[0].participantSessionId // empty' 2>/dev/null)
   if [ -z "$session_id" ]; then
-    err "Could not extract participantSessionId from flow list: $flows"
+    err "No pending AWAITING_OR flow found from $peer_did on $admin_api"
     return 1
   fi
   ok "Found pending flow: $session_id"
 
+  # Validate checks the claims against the schema and records the fee terms. It
+  # answers submission=OPERATOR when the agent holds no authorization on the
+  # validator entry, and then it broadcasts nothing: set_participant_validated
+  # sends the transaction, and the agent completes the flow on the chain event.
+  # A schema with no validity period makes effectiveUntil mandatory here: the API
+  # answers 400 INVALID_INPUT without it. The value becomes the validUntil of the
+  # credential, so keep it within the effective_until of the ISSUER entry.
   local result http_code
   http_code=$(curl -s -o /tmp/vt_flow_validate.json -w '%{http_code}' \
-    -X POST "${admin_api}/v1/vt/flows/${session_id}/validate")
+    -X POST -H 'Content-Type: application/json' \
+    -d "{\"effectiveUntil\":\"${VT_FLOW_EFFECTIVE_UNTIL:-2027-09-29T00:00:00Z}\"}" \
+    "${admin_api}/v2/vt/flows/${session_id}/validate")
   result=$(cat /tmp/vt_flow_validate.json)
   if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
     err "Failed to validate flow $session_id (HTTP $http_code). Response: $result"
     return 1
   fi
-  ok "Flow validated: $session_id"
+  ok "Flow validated: $session_id (submission: $(echo "$result" | jq -r '.validation.submission // "unknown"'))"
   echo "$session_id"
 }
 
@@ -1095,14 +1138,13 @@ validate_pending_flow() {
 has_completed_flow() {
   local admin_api=$1
   local peer_did=$2
-  local query="role=validator&peerDID=$(printf '%s' "$peer_did" | jq -sRr @uri)"
+  local query="role=validator&peerDid=$(printf '%s' "$peer_did" | jq -sRr @uri)"
 
   local flows
-  flows=$(curl -sf "${admin_api}/v1/vt/flows?${query}" 2>/dev/null) || return 1
-  # The flow record names the state in `state`; `flowState` is the field the
-  # vt.flows event carries, and it is null on a record read back from the API.
+  flows=$(curl -sf "${admin_api}/v2/vt/flows?${query}" 2>/dev/null) || return 1
+  # The v2 record names the state flowState, and a list answers with a page.
   local match
   match=$(echo "$flows" | jq -r '
-    [.[] | (.state // .flowState) | select(. == "COMPLETED" or . == "VALIDATED")] | length' 2>/dev/null || echo "0")
+    [(.items // [])[] | .flowState | select(. == "COMPLETED" or . == "VALIDATED")] | length' 2>/dev/null || echo "0")
   [ "${match:-0}" -gt 0 ]
 }

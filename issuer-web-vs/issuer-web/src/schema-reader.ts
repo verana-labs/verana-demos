@@ -1,8 +1,5 @@
 import { VsAgentClient } from "./vs-agent-client";
-import {
-  discoverVtjscFromDidDocument,
-  resolveSchemaRef,
-} from "@verana-demos/vt-schema";
+import { discoverVtjscFromDidDocument } from "@verana-demos/vt-schema";
 
 export interface SchemaAttribute {
   name: string;
@@ -19,76 +16,35 @@ export interface SchemaInfo {
   credentialDefinitionId: string;
 }
 
-// Discover the custom schema VTJSC from the organization-vs public DID document.
-// Falls back to the admin API when no public URL is configured (fully local setup).
+// Discover the custom schema VTJSC from the organization-vs DID document.
 export async function discoverSchema(
   client: VsAgentClient,
   customSchemaBaseId: string,
   orgPublicUrl?: string,
-  orgClient?: VsAgentClient
+  orgLocalPublicUrl?: string
 ): Promise<SchemaInfo> {
-  let vtjscId: string;
-  let jsonSchema: Record<string, unknown>;
-
-  if (orgPublicUrl) {
-    // Discover from the public DID document (works through the public ingress).
-    const didDocUrl = `${orgPublicUrl}/.well-known/did.json`;
-    console.log(`Fetching organization-vs DID document from ${didDocUrl}`);
-    const discovered = await discoverVtjscFromDidDocument(
-      didDocUrl,
-      customSchemaBaseId
+  // The agent of organization-vs publishes each VTJSC as a
+  // LinkedVerifiablePresentation service of its DID document. A local setup reads
+  // that same document from another host, so one discovery path serves both setups.
+  const orgBaseUrl = orgPublicUrl || orgLocalPublicUrl;
+  if (!orgBaseUrl) {
+    throw new Error(
+      "Cannot discover the schema: no public URL for organization-vs. " +
+        "Set ORG_VS_PUBLIC_URL, or set ORG_VS_PUBLIC_PORT for a local setup."
     );
-    vtjscId = discovered.vtjscId;
-    jsonSchema = discovered.jsonSchema;
-    console.log(
-      `Discovered VTJSC ${vtjscId} for credential schema ${discovered.schemaId}`
-    );
-  } else {
-    // Fallback: the org admin API (a fully local setup with no public ingress).
-    const schemaSource = orgClient || client;
-    const vtjscList = await schemaSource.getJsonSchemaCredentials();
-
-    // v4 names a VTJSC after the numeric credential schema id, so the base id of the schema file
-    // no longer appears in it. With one custom VTJSC that is the one; otherwise match the title.
-    const candidates = vtjscList.data.filter((v) =>
-      /schemas-\d+-jsc\.json$/.test(v.credential.id)
-    );
-    if (candidates.length === 0) {
-      const availableIds = vtjscList.data.map((v) => v.credential.id);
-      throw new Error(
-        `No custom VTJSC found for base ID "${customSchemaBaseId}". ` +
-          `Available VTJSCs: ${JSON.stringify(availableIds)}`
-      );
-    }
-
-    let picked: { entry: (typeof candidates)[number]; schema: Record<string, unknown> } | undefined;
-    for (const candidate of candidates) {
-      const rawRef = candidate.credential.credentialSubject?.jsonSchema;
-      const ref =
-        typeof rawRef === "object" && rawRef !== null
-          ? (rawRef as { $ref: string }).$ref
-          : (rawRef as string | undefined);
-      if (!ref) continue;
-      const resolved = await resolveSchemaRef(ref);
-      const title = String(resolved.jsonSchema.title ?? "").toLowerCase();
-      if (
-        candidates.length === 1 ||
-        title.replace(/\s+/g, "-").includes(customSchemaBaseId.toLowerCase())
-      ) {
-        picked = { entry: candidate, schema: resolved.jsonSchema };
-        break;
-      }
-    }
-    if (!picked) {
-      throw new Error(
-        `None of the ${candidates.length} custom VTJSCs names "${customSchemaBaseId}"`
-      );
-    }
-    vtjscId = picked.entry.credential.id;
-    jsonSchema = picked.schema;
   }
 
-  const schema = jsonSchema;
+  const didDocUrl = `${orgBaseUrl}/.well-known/did.json`;
+  console.log(`Fetching organization-vs DID document from ${didDocUrl}`);
+  const discovered = await discoverVtjscFromDidDocument(
+    didDocUrl,
+    customSchemaBaseId
+  );
+  const vtjscId = discovered.vtjscId;
+  const schema = discovered.jsonSchema;
+  console.log(
+    `Discovered VTJSC ${vtjscId} for credential schema ${discovered.schemaId}`
+  );
 
   const csProps = (
     schema.properties as Record<string, unknown> | undefined
@@ -129,7 +85,7 @@ export async function discoverSchema(
   );
 
   // Ensure a local AnonCreds credential type exists on the issuer agent
-  const credentialDefinitionId = await ensureCredentialType(client, vtjscId, title);
+  const credentialDefinitionId = await ensureCredentialType(client, vtjscId);
 
   return {
     vtjscId,
@@ -142,31 +98,29 @@ export async function discoverSchema(
 
 async function ensureCredentialType(
   client: VsAgentClient,
-  vtjscId: string,
-  name: string
+  vtjscId: string
 ): Promise<string> {
   // Check if a credential type already exists for this VTJSC
-  const existingTypes = await client.getCredentialTypes();
-  const existing = existingTypes.find(
-    (ct) => ct.relatedJsonSchemaCredentialId === vtjscId
-  );
-  if (existing) {
-    console.log(
-      `Using existing credential type: ${existing.id}`
+  let cursor: string | undefined;
+  do {
+    const page = await client.listCredentialDefinitions(cursor);
+    const existing = page.items.find(
+      (definition) => definition.relatedJsonSchemaCredentialId === vtjscId
     );
-    return existing.id;
-  }
+    if (existing) {
+      console.log(`Using existing credential type: ${existing.id}`);
+      return existing.id;
+    }
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
 
-  // Create a new credential type
+  // Create a new credential type. The agent reads the name, the version and the
+  // attributes from the VTJSC, so the caller sends neither of them.
   console.log(`Creating anoncreds credential type for VTJSC ${vtjscId}...`);
-  const created = await client.createCredentialType({
-    name,
-    version: "1.0",
+  const created = await client.createCredentialDefinition({
     relatedJsonSchemaCredentialId: vtjscId,
     supportRevocation: false,
   });
-  console.log(
-    `Created credential type: ${created.id}`
-  );
+  console.log(`Created credential type: ${created.id}`);
   return created.id;
 }

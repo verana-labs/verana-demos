@@ -18,20 +18,12 @@ async function main(): Promise<void> {
   // Wait for VS-Agent to be ready
   const client = new VsAgentClient(config);
   const agent = await client.waitForReady();
-  console.log(`VS-Agent ready — DID: ${agent.publicDid}`);
+  console.log(`VS-Agent ready — DID: ${agent.did}`);
 
   // Discover schema from organization-vs (schema owner)
   const customSchemaBaseId = process.env.CUSTOM_SCHEMA_BASE_ID || "example";
   const orgPublicUrl = config.orgVsPublicUrl || undefined;
-  const orgClient = orgPublicUrl
-    ? undefined
-    : new VsAgentClient({ ...config, vsAgentAdminUrl: config.orgVsAdminUrl });
-  const schema = await discoverSchema(
-    client,
-    customSchemaBaseId,
-    orgPublicUrl,
-    orgClient
-  );
+  const schema = await discoverSchema(client, customSchemaBaseId, orgPublicUrl);
 
   // Initialize session store
   const store = new SessionStore(config.databaseUrl);

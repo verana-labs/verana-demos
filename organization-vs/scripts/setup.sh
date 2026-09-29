@@ -56,7 +56,7 @@ source "${REPO_ROOT}/common/common.sh"
 # ---------------------------------------------------------------------------
 
 NETWORK="${NETWORK:-devnet}"
-VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.59}"
+VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.72}"
 VS_AGENT_CONTAINER_NAME="${VS_AGENT_CONTAINER_NAME:-organization-vs}"
 VS_AGENT_ADMIN_PORT="${VS_AGENT_ADMIN_PORT:-3000}"
 VS_AGENT_PUBLIC_PORT="${VS_AGENT_PUBLIC_PORT:-3001}"
@@ -104,7 +104,7 @@ SERVICE_DESCRIPTION="${SERVICE_DESCRIPTION:-Ecosystem controller of the Verana d
 
 if ! command -v veranad &> /dev/null; then
   log "veranad not found — downloading..."
-  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.4}"
+  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.5}"
   PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
   case "$ARCH" in
@@ -251,7 +251,7 @@ else
   exit 1
 fi
 
-AGENT_DID=$(curl -sf "${ADMIN_API}/v1/agent" | jq -r '.publicDid')
+AGENT_DID=$(curl -sf "${ADMIN_API}/v2/agent/info" | jq -r '.did')
 if [ -z "$AGENT_DID" ] || [ "$AGENT_DID" = "null" ]; then
   err "Could not retrieve agent DID"
   exit 1

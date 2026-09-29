@@ -51,6 +51,9 @@ export function createRoutes(
     try {
       const attributeNames = schema.attributes.map((a) => a.name);
 
+      // The agent waits for an explicit accept call unless autoAccept is true. This
+      // application runs no verifier step of its own, so the agent must acknowledge
+      // the presentation on its own.
       const presResponse = await client.createPresentationRequest({
         requestedCredentials: [
           {
@@ -58,12 +61,13 @@ export function createRoutes(
             attributes: attributeNames,
           },
         ],
+        autoAccept: true,
       });
 
       const session = store.createSession(presResponse.proofExchangeId);
 
-      // Use shortUrl for QR code (long URL exceeds QR capacity)
-      const qrUrl = presResponse.shortUrl || presResponse.url;
+      // Use shortUrl for QR code (the invitation itself exceeds QR capacity)
+      const qrUrl = presResponse.shortUrl;
       const qrDataUrl = await QRCode.toDataURL(qrUrl, {
         width: 300,
         margin: 2,

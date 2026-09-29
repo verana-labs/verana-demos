@@ -6,7 +6,7 @@
 # after running the "bootstrap-corporation" workflow step once).
 # Example: vs/devnet-example → __NETWORK__=devnet, __VS_NAME__=example
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v2.0.0-dev.59
+chartVersion: v2.0.0-dev.72
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
@@ -43,7 +43,7 @@ veranaCorporationId: "__CORPORATION_ID__"
 agentMode: "standalone"
 # The shared ECS Ecosystem this service joins to obtain its own ECS
 # credentials — see verana-deploy/scripts/ecs-ecosystem (devnet only).
-trustedEcsEcosystemDids: "did:webvh:QmbDoPbwb4Nu2VLm2oSEUrnMokAzr5fCPu4c13Ysmov6SH:ecs-ecosystem.devnet.verana.network"
+trustedEcsEcosystemDids: "did:webvh:QmVWnZrJ3B5cR3oGhdBHcbE6YhYe9FHRGwaGxY7c2wPMFN:ecs-ecosystem.devnet.verana.network"
 
 resources:
   requests:
@@ -65,7 +65,7 @@ ingress:
     host: ""
 
 extraEnv:
-  # dev.59 accepts a level name only: trace, debug, info, warn, error or off.
+  # The agent accepts a level name only: trace, debug, info, warn, error or off.
   - name: AGENT_LOG_LEVEL
     value: "info"
   - name: USE_CORS

@@ -70,7 +70,7 @@ jobs:
       - name: Install veranad
         if: inputs.step != 'deploy-chatbot'
         run: |
-          VERANAD_VERSION="v0.10.4"
+          VERANAD_VERSION="v0.10.5"
           curl -sfL "https://github.com/verana-labs/verana-node/releases/download/${VERANAD_VERSION}/veranad-linux-amd64" \
             -o /usr/local/bin/veranad
           chmod +x /usr/local/bin/veranad
@@ -182,7 +182,7 @@ jobs:
           kubectl port-forward -n "${{ secrets.K8S_NAMESPACE }}" "svc/$RELEASE_NAME" 3002:3000 &
           echo "CHILD_PF_PID=$!" >> "$GITHUB_ENV"
           sleep 5
-          curl -sf http://localhost:3002/v1/agent > /dev/null || {
+          curl -sf http://localhost:3002/v2/agent/health/live > /dev/null || {
             echo "::error::Port-forward to child VS-Agent failed"
             exit 1
           }
@@ -195,7 +195,7 @@ jobs:
           kubectl port-forward -n "${{ secrets.K8S_NAMESPACE }}" "svc/${VS_NAME}" 3000:3000 &
           echo "ORG_PF_PID=$!" >> "$GITHUB_ENV"
           sleep 5
-          curl -sf http://localhost:3000/v1/agent > /dev/null || {
+          curl -sf http://localhost:3000/v2/agent/health/live > /dev/null || {
             echo "::error::Port-forward to organization VS-Agent failed"
             exit 1
           }
@@ -248,8 +248,8 @@ jobs:
 
           # The agent needs a moment to react to its own StartParticipantOP and send the request.
           for _ in $(seq 1 12); do
-            if curl -sf "http://localhost:3000/v1/vt/flows?role=validator&flowState=AWAITING_OR" \
-                 | jq -e --arg did "$CHILD_DID" 'any(.[]; (.peerDID // .peerDid) == $did)' > /dev/null 2>&1; then
+            if curl -sf "http://localhost:3000/v2/vt/flows?role=validator&flowState=AWAITING_OR" \
+                 | jq -e --arg did "$CHILD_DID" 'any(.items[]; .peerDid == $did)' > /dev/null 2>&1; then
               break
             fi
             sleep 10
@@ -271,7 +271,7 @@ jobs:
           set_network_vars "$NETWORK"
           resolve_corporation "$CORPORATION_ID"
 
-          CHILD_DID=$(curl -sf "http://localhost:3002/v1/agent" | jq -r '.publicDid')
+          CHILD_DID=$(curl -sf "http://localhost:3002/v2/agent/info" | jq -r '.did')
           ok "Child DID: $CHILD_DID"
 
           ORG_PUBLIC_URL="https://organization-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
@@ -360,8 +360,6 @@ jobs:
                     env:
                       - name: VS_AGENT_ADMIN_URL
                         value: "http://${RELEASE_NAME}:3000"
-                      - name: ORG_VS_ADMIN_URL
-                        value: "http://${VS_NAME}:3000"
                       - name: ORG_VS_PUBLIC_URL
                         value: "https://organization-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
                       - name: ISSUER_VS_PUBLIC_URL

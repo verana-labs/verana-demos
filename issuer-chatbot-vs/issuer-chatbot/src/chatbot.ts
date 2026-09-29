@@ -9,6 +9,11 @@ export class Chatbot {
   private schema: SchemaInfo;
   private config: Config;
 
+  // The holder opens a second connection for the credential exchange, and the
+  // exchange events name only the exchange. This map gives back the chat
+  // connection that asked for the credential.
+  private chatByCredentialExchange = new Map<string, string>();
+
   constructor(
     client: VsAgentClient,
     store: SessionStore,
@@ -21,14 +26,11 @@ export class Chatbot {
     this.config = config;
   }
 
-  async sendReceipts(connectionId: string, messageId: string): Promise<void> {
-    await this.client.sendReceipts(connectionId, messageId);
-  }
-
   private menuTitle(): string {
     return `${this.config.serviceName} Issuer`;
   }
 
+  // The agent refuses a menu that has no option, so every state offers one.
   private menuForState(state: SessionState): ContextualMenu {
     const title = this.menuTitle();
     switch (state) {
@@ -36,19 +38,37 @@ export class Chatbot {
         return {
           title,
           description: "Credential issuance in progress",
-          options: [{ id: "abort", title: "Cancel" }],
+          options: [
+            {
+              name: "abort",
+              title: "Cancel",
+              description: "Stop and start over",
+            },
+          ],
         };
       case SessionState.DONE:
         return {
           title,
           description: "Credential issued",
-          options: [{ id: "new_credential", title: "New credential" }],
+          options: [
+            {
+              name: "new_credential",
+              title: "New credential",
+              description: "Get another credential",
+            },
+          ],
         };
       default:
         return {
           title,
           description: "Welcome",
-          options: [],
+          options: [
+            {
+              name: "new_credential",
+              title: "New credential",
+              description: "Start a new credential issuance",
+            },
+          ],
         };
     }
   }
@@ -150,6 +170,25 @@ export class Chatbot {
     }
   }
 
+  /** The holder accepted the offer, so the exchange reached the state `done`. */
+  async onCredentialIssued(credentialExchangeId: string): Promise<void> {
+    const connectionId = this.chatByCredentialExchange.get(credentialExchangeId);
+    if (!connectionId) {
+      console.warn(
+        `No chat connection for credential exchange ${credentialExchangeId}`
+      );
+      return;
+    }
+    this.chatByCredentialExchange.delete(credentialExchangeId);
+
+    this.store.updateSession(connectionId, { state: SessionState.DONE });
+    await this.sendText(
+      connectionId,
+      "Your credential is in your wallet. Enjoy the service!",
+      SessionState.DONE
+    );
+  }
+
   private async handleAttributeInput(
     connectionId: string,
     session: ReturnType<SessionStore["getSession"]> & {},
@@ -213,24 +252,20 @@ export class Chatbot {
         value,
       }));
 
-      const didcommPayload = {
-        type: "credential-issuance",
-        connectionId,
+      const offer = await this.client.createCredentialOffer({
         credentialDefinitionId: this.schema.credentialDefinitionId,
         claims: claimsArray,
-      };
-      console.log(
-        "DIDComm credential-issuance payload:",
-        JSON.stringify(didcommPayload, null, 2)
-      );
+        autoAccept: true,
+      });
+      this.chatByCredentialExchange.set(offer.credentialExchangeId, connectionId);
 
-      await this.client.issueCredentialOverConnection(
+      // The offer lives on its own exchange, so the holder must open the link.
+      // The session reaches DONE when the exchange reports `done`.
+      await this.sendText(
         connectionId,
-        this.schema.credentialDefinitionId,
-        claimsArray
+        `Open this link to receive your credential: ${offer.shortUrl}`,
+        SessionState.ISSUE
       );
-
-      this.store.updateSession(connectionId, { state: SessionState.DONE });
     } catch (error) {
       console.error(`Failed to issue credential for ${connectionId}:`, error);
       this.store.updateSession(connectionId, {

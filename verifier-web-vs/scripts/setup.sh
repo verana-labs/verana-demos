@@ -42,7 +42,7 @@ source "${REPO_ROOT}/common/common.sh"
 # ---------------------------------------------------------------------------
 
 NETWORK="${NETWORK:-devnet}"
-VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.59}"
+VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.72}"
 VS_AGENT_CONTAINER_NAME="${VS_AGENT_CONTAINER_NAME:-verifier-web-vs}"
 VS_AGENT_ADMIN_PORT="${VS_AGENT_ADMIN_PORT:-3008}"
 VS_AGENT_PUBLIC_PORT="${VS_AGENT_PUBLIC_PORT:-3009}"
@@ -67,7 +67,7 @@ ISSUER_VS_PUBLIC_URL="${ISSUER_VS_PUBLIC_URL:-http://localhost:3005}"
 
 if ! command -v veranad &> /dev/null; then
   log "veranad not found — downloading..."
-  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.4}"
+  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.5}"
   PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
   case "$ARCH" in
@@ -87,7 +87,7 @@ log "Network: $NETWORK (chain: $CHAIN_ID)"
 
 ADMIN_API="http://localhost:${VS_AGENT_ADMIN_PORT}"
 
-if ! curl -sf "${ORG_VS_ADMIN_URL}/api" > /dev/null 2>&1; then
+if ! curl -sf "${ORG_VS_ADMIN_URL}/v2/agent/health/live" > /dev/null 2>&1; then
   err "Organization VS admin API not reachable at ${ORG_VS_ADMIN_URL}"
   err "Make sure organization-vs is running and ORG_VS_ADMIN_URL is set correctly."
   exit 1
@@ -193,6 +193,7 @@ docker run --platform linux/amd64 -d \
   -e "AGENT_PUBLIC_DID_METHOD=webvh" \
   -e "AGENT_LABEL=${SERVICE_NAME}" \
   -e "ENABLE_PUBLIC_API_SWAGGER=true" \
+  -e "EVENTS_WEBHOOK_URL=http://host.docker.internal:${VERIFIER_PORT:-4003}/events" \
   -e "VERANA_RPC_ENDPOINT_URL=${NODE_RPC}" \
   -e "VERANA_INDEXER_BASE_URL=${INDEXER_URL}" \
   -e "VERANA_CHAIN_ID=${CHAIN_ID}" \
@@ -221,7 +222,7 @@ else
   exit 1
 fi
 
-AGENT_DID=$(curl -sf "${ADMIN_API}/v1/agent" | jq -r '.publicDid')
+AGENT_DID=$(curl -sf "${ADMIN_API}/v2/agent/info" | jq -r '.did')
 if [ -z "$AGENT_DID" ] || [ "$AGENT_DID" = "null" ]; then
   err "Could not retrieve agent DID"
   exit 1

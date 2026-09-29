@@ -17,7 +17,7 @@
 
 services:
   vs-agent:
-    image: ${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.59}
+    image: ${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.72}
     platform: linux/amd64
     ports:
       - "${VS_AGENT_ADMIN_PORT:-3008}:3000"
@@ -27,6 +27,7 @@ services:
       - AGENT_PUBLIC_DID_METHOD=webvh
       - AGENT_LABEL=${SERVICE_NAME:-Example Web Verifier}
       - ENABLE_PUBLIC_API_SWAGGER=true
+      - EVENTS_WEBHOOK_URL=http://verifier-web:${VERIFIER_PORT:-4003}/events
     volumes:
       - vs-agent-data:/root/.afj
 

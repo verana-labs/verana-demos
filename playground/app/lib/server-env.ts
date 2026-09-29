@@ -11,9 +11,11 @@ export const SERVICE_IDS = [
 
 export type ServiceId = (typeof SERVICE_IDS)[number];
 
+// The demos run on devnet only: the v4 chain modules that they need are not on
+// testnet yet. The deploy workflow overrides both values.
 export const BASE_DOMAIN =
-  process.env.DEMOS_BASE_DOMAIN || "main.demos.testnet.verana.network";
-export const NETWORK = process.env.VERANA_NETWORK || "testnet";
+  process.env.DEMOS_BASE_DOMAIN || "example.demos.devnet.verana.network";
+export const NETWORK = process.env.VERANA_NETWORK || "devnet";
 export const INDEXER_URL =
   process.env.INDEXER_URL || `https://idx.${NETWORK}.verana.network`;
 export const FRONTEND_URL =

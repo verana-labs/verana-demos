@@ -42,7 +42,7 @@ source "${REPO_ROOT}/common/common.sh"
 # ---------------------------------------------------------------------------
 
 NETWORK="${NETWORK:-devnet}"
-VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.59}"
+VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.72}"
 VS_AGENT_CONTAINER_NAME="${VS_AGENT_CONTAINER_NAME:-verifier-chatbot-vs}"
 VS_AGENT_ADMIN_PORT="${VS_AGENT_ADMIN_PORT:-3006}"
 VS_AGENT_PUBLIC_PORT="${VS_AGENT_PUBLIC_PORT:-3007}"
@@ -68,7 +68,7 @@ ISSUER_VS_PUBLIC_URL="${ISSUER_VS_PUBLIC_URL:-http://localhost:3003}"
 
 if ! command -v veranad &> /dev/null; then
   log "veranad not found — downloading..."
-  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.4}"
+  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.5}"
   PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
   case "$ARCH" in
@@ -88,7 +88,7 @@ log "Network: $NETWORK (chain: $CHAIN_ID)"
 
 ADMIN_API="http://localhost:${VS_AGENT_ADMIN_PORT}"
 
-if ! curl -sf "${ORG_VS_ADMIN_URL}/api" > /dev/null 2>&1; then
+if ! curl -sf "${ORG_VS_ADMIN_URL}/v2/agent/health/live" > /dev/null 2>&1; then
   err "Organization VS admin API not reachable at ${ORG_VS_ADMIN_URL}"
   err "Make sure organization-vs is running and ORG_VS_ADMIN_URL is set correctly."
   exit 1
@@ -223,7 +223,7 @@ else
   exit 1
 fi
 
-AGENT_DID=$(curl -sf "${ADMIN_API}/v1/agent" | jq -r '.publicDid')
+AGENT_DID=$(curl -sf "${ADMIN_API}/v2/agent/info" | jq -r '.did')
 if [ -z "$AGENT_DID" ] || [ "$AGENT_DID" = "null" ]; then
   err "Could not retrieve agent DID"
   exit 1

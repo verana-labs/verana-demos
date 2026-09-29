@@ -1,59 +1,28 @@
 import { Config } from "./config";
 
 export interface AgentInfo {
-  publicDid: string;
-  label: string;
-  [key: string]: unknown;
-}
-
-export interface VtjscCredential {
-  id: string;
-  credentialSubject?: {
-    jsonSchema?: { $ref: string } | string;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
-
-export interface VtjscEntry {
-  credential: VtjscCredential;
-  schemaId: string;
-  [key: string]: unknown;
-}
-
-export interface VtjscListResponse {
-  data: VtjscEntry[];
-}
-
-export interface CreateCredentialTypeRequest {
-  name: string;
+  did?: string;
   version: string;
-  attributes?: string[];
-  relatedJsonSchemaCredentialId?: string;
-  supportRevocation: boolean;
-}
-
-export interface CredentialType {
-  id: string;
-  name: string;
-  version: string;
-  relatedJsonSchemaCredentialId?: string;
   [key: string]: unknown;
 }
 
 export interface RequestedCredential {
-  credentialDefinitionId: string;
-  attributes: string[];
+  // The agent accepts one of these two ids, never both.
+  credentialDefinitionId?: string;
+  jsonSchemaCredentialId?: string;
+  attributes?: string[];
 }
 
 export interface PresentationRequestResponse {
   proofExchangeId: string;
-  url: string;
+  invitation: Record<string, unknown>;
   shortUrl: string;
 }
 
 export interface CreatePresentationRequestParams {
   requestedCredentials: RequestedCredential[];
+  requireNonRevocation?: boolean;
+  autoAccept?: boolean;
 }
 
 export class VsAgentClient {
@@ -88,28 +57,7 @@ export class VsAgentClient {
   }
 
   async getAgent(): Promise<AgentInfo> {
-    return this.request<AgentInfo>("GET", "/v1/agent");
-  }
-
-  async getJsonSchemaCredentials(): Promise<VtjscListResponse> {
-    return this.request<VtjscListResponse>(
-      "GET",
-      "/v1/vt/json-schema-credentials"
-    );
-  }
-
-  async getCredentialTypes(): Promise<CredentialType[]> {
-    return this.request<CredentialType[]>("GET", "/v1/credential-types");
-  }
-
-  async createCredentialType(
-    params: CreateCredentialTypeRequest
-  ): Promise<CredentialType> {
-    return this.request<CredentialType>(
-      "POST",
-      "/v1/credential-types",
-      params
-    );
+    return this.request<AgentInfo>("GET", "/v2/agent/info");
   }
 
   async createPresentationRequest(
@@ -117,7 +65,7 @@ export class VsAgentClient {
   ): Promise<PresentationRequestResponse> {
     return this.request<PresentationRequestResponse>(
       "POST",
-      "/v1/invitation/presentation-request",
+      "/v2/didcomm/presentation-request",
       params
     );
   }

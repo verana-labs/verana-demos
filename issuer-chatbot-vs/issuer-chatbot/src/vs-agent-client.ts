@@ -1,43 +1,29 @@
 import { Config } from "./config";
 
 export interface AgentInfo {
-  publicDid: string;
-  label: string;
+  did?: string;
+  version: string;
   [key: string]: unknown;
 }
 
-export interface VtjscCredential {
+/** A page of a v2 list route. `nextCursor` is null on the last page. */
+export interface Page<T> {
+  items: T[];
+  nextCursor: string | null;
+}
+
+export interface CreateCredentialDefinitionRequest {
+  relatedJsonSchemaCredentialId: string;
+  supportRevocation?: boolean;
+}
+
+export interface CredentialDefinition {
   id: string;
-  credentialSubject?: {
-    jsonSchema?: { $ref: string } | string;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
-
-export interface VtjscEntry {
-  credential: VtjscCredential;
-  schemaId: string;
-  [key: string]: unknown;
-}
-
-export interface VtjscListResponse {
-  data: VtjscEntry[];
-}
-
-export interface CreateCredentialTypeRequest {
   name: string;
   version: string;
-  attributes?: string[];
-  relatedJsonSchemaCredentialId?: string;
+  attributes: string[];
   supportRevocation: boolean;
-}
-
-export interface CredentialType {
-  id: string;
-  name: string;
-  version: string;
-  relatedJsonSchemaCredentialId?: string;
+  relatedJsonSchemaCredentialId: string;
   [key: string]: unknown;
 }
 
@@ -48,8 +34,9 @@ export interface CredentialIssuanceClaim {
 }
 
 export interface ContextualMenuEntry {
-  id: string;
+  name: string;
   title: string;
+  description: string;
 }
 
 export interface ContextualMenu {
@@ -62,6 +49,18 @@ export interface SendMessageRequest {
   connectionId: string;
   content: string;
   contextualMenu?: ContextualMenu;
+}
+
+export interface CreateCredentialOfferRequest {
+  credentialDefinitionId: string;
+  claims: CredentialIssuanceClaim[];
+  autoAccept?: boolean;
+}
+
+export interface CreateCredentialOfferResponse {
+  credentialExchangeId: string;
+  invitation: Record<string, unknown>;
+  shortUrl: string;
 }
 
 export class VsAgentClient {
@@ -96,76 +95,62 @@ export class VsAgentClient {
   }
 
   async getAgent(): Promise<AgentInfo> {
-    return this.request<AgentInfo>("GET", "/v1/agent");
+    return this.request<AgentInfo>("GET", "/v2/agent/info");
   }
 
-  async getJsonSchemaCredentials(): Promise<VtjscListResponse> {
-    return this.request<VtjscListResponse>(
-      "GET",
-      "/v1/vt/json-schema-credentials"
-    );
+  /** Read every page of the credential definitions of this agent. */
+  async getCredentialDefinitions(): Promise<CredentialDefinition[]> {
+    const all: CredentialDefinition[] = [];
+    let cursor: string | null = null;
+    do {
+      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+      const page: Page<CredentialDefinition> = await this.request<
+        Page<CredentialDefinition>
+      >("GET", `/v2/anoncreds/credential-definitions${query}`);
+      all.push(...page.items);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return all;
   }
 
-  async getCredentialTypes(): Promise<CredentialType[]> {
-    return this.request<CredentialType[]>("GET", "/v1/credential-types");
-  }
-
-  async createCredentialType(
-    params: CreateCredentialTypeRequest
-  ): Promise<CredentialType> {
-    return this.request<CredentialType>(
+  async createCredentialDefinition(
+    params: CreateCredentialDefinitionRequest
+  ): Promise<CredentialDefinition> {
+    return this.request<CredentialDefinition>(
       "POST",
-      "/v1/credential-types",
+      "/v2/anoncreds/credential-definitions",
       params
     );
   }
 
-  async issueCredentialOverConnection(
-    connectionId: string,
-    credentialDefinitionId: string,
-    claims: CredentialIssuanceClaim[]
-  ): Promise<void> {
-    await this.request<unknown>("POST", "/v1/message", {
-      type: "credential-issuance",
-      connectionId,
-      credentialDefinitionId,
-      claims,
-    });
-  }
-
-  async sendReceipts(
-    connectionId: string,
-    messageId: string,
-    states: string[] = ["received", "viewed"]
-  ): Promise<void> {
-    const now = new Date().toISOString();
-    await this.request<unknown>("POST", "/v1/message", {
-      type: "receipts",
-      connectionId,
-      receipts: states.map((state) => ({
-        message_id: messageId,
-        state,
-        timestamp: now,
-      })),
-    });
+  /**
+   * Create a credential offer. The agent answers with an out-of-band invitation.
+   * The offer belongs to a new exchange, so the holder opens a second connection
+   * for it. The caller sends `shortUrl` to the chat and keeps the chat
+   * connection under `credentialExchangeId`.
+   */
+  async createCredentialOffer(
+    params: CreateCredentialOfferRequest
+  ): Promise<CreateCredentialOfferResponse> {
+    return this.request<CreateCredentialOfferResponse>(
+      "POST",
+      "/v2/didcomm/credential-offer",
+      params
+    );
   }
 
   async sendMessage(params: SendMessageRequest): Promise<void> {
     // Send text message
-    await this.request<unknown>("POST", "/v1/message", {
-      type: "text",
+    await this.request<{ id: string }>("POST", "/v2/didcomm/basic-messages", {
       connectionId: params.connectionId,
       content: params.content,
     });
 
     // Send contextual menu update if provided
     if (params.contextualMenu) {
-      await this.request<unknown>("POST", "/v1/message", {
-        type: "contextual-menu-update",
+      await this.request<{ id: string }>("POST", "/v2/didcomm/action-menu", {
         connectionId: params.connectionId,
-        title: params.contextualMenu.title,
-        description: params.contextualMenu.description,
-        options: params.contextualMenu.options,
+        menu: params.contextualMenu,
       });
     }
   }

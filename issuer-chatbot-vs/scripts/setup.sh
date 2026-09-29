@@ -43,7 +43,7 @@ source "${REPO_ROOT}/common/common.sh"
 # ---------------------------------------------------------------------------
 
 NETWORK="${NETWORK:-devnet}"
-VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.59}"
+VS_AGENT_IMAGE="${VS_AGENT_IMAGE:-veranalabs/vs-agent:v2.0.0-dev.72}"
 VS_AGENT_CONTAINER_NAME="${VS_AGENT_CONTAINER_NAME:-issuer-chatbot-vs}"
 VS_AGENT_ADMIN_PORT="${VS_AGENT_ADMIN_PORT:-3002}"
 VS_AGENT_PUBLIC_PORT="${VS_AGENT_PUBLIC_PORT:-3003}"
@@ -62,8 +62,6 @@ SERVICE_TYPE="${SERVICE_TYPE:-MESSAGING_APP}"
 SERVICE_DESCRIPTION="${SERVICE_DESCRIPTION:-Chatbot credential issuer for the Verana demo ecosystem}"
 
 ENABLE_ANONCREDS="${ENABLE_ANONCREDS:-false}"
-ANONCREDS_NAME="${ANONCREDS_NAME:-example}"
-ANONCREDS_VERSION="${ANONCREDS_VERSION:-1.0}"
 ANONCREDS_SUPPORT_REVOCATION="${ANONCREDS_SUPPORT_REVOCATION:-false}"
 
 # ---------------------------------------------------------------------------
@@ -72,7 +70,7 @@ ANONCREDS_SUPPORT_REVOCATION="${ANONCREDS_SUPPORT_REVOCATION:-false}"
 
 if ! command -v veranad &> /dev/null; then
   log "veranad not found — downloading..."
-  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.4}"
+  VERANAD_VERSION="${VERANAD_VERSION:-v0.10.5}"
   PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
   case "$ARCH" in
@@ -92,7 +90,7 @@ log "Network: $NETWORK (chain: $CHAIN_ID)"
 
 ADMIN_API="http://localhost:${VS_AGENT_ADMIN_PORT}"
 
-if ! curl -sf "${ORG_VS_ADMIN_URL}/api" > /dev/null 2>&1; then
+if ! curl -sf "${ORG_VS_ADMIN_URL}/v2/agent/health/live" > /dev/null 2>&1; then
   err "Organization VS admin API not reachable at ${ORG_VS_ADMIN_URL}"
   err "Make sure organization-vs is running and ORG_VS_ADMIN_URL is set correctly."
   exit 1
@@ -227,7 +225,7 @@ else
   exit 1
 fi
 
-AGENT_DID=$(curl -sf "${ADMIN_API}/v1/agent" | jq -r '.publicDid')
+AGENT_DID=$(curl -sf "${ADMIN_API}/v2/agent/info" | jq -r '.did')
 if [ -z "$AGENT_DID" ] || [ "$AGENT_DID" = "null" ]; then
   err "Could not retrieve agent DID"
   exit 1
@@ -308,18 +306,19 @@ if [ "$ENABLE_ANONCREDS" = "true" ]; then
       | jq -r '.[0].id // empty' 2>/dev/null || echo "")
     ok "AnonCreds credential definition already exists: ${ANONCREDS_CRED_DEF_ID} — skipping"
   else
-    # v4 VTJSC schema ref format: vpr:verana:<chain-id>:cs:<schema-id>
-    VTJSC_VPR_REF="vpr:verana:${CHAIN_ID}:cs:${CUSTOM_SCHEMA_ID}"
-    VTJSC_CRED_ID=$(curl -sf "${ADMIN_API}/v1/vt/json-schema-credentials" \
-      | jq -r --arg sid "$VTJSC_VPR_REF" '.data[] | select(.schemaId == $sid) | .credential.id')
+    # The v2 API has no route that lists JSON Schema Credentials. The Ecosystem
+    # controller publishes each one in its DID Document instead.
+    VTJSC_CRED_ID=$(fetch_vtjsc_credential_id "${ORG_PUBLIC_API}/.well-known/did.json" "$CUSTOM_SCHEMA_ID")
     if [ -z "$VTJSC_CRED_ID" ]; then
-      err "Could not find VTJSC for schema $CUSTOM_SCHEMA_ID (ref: $VTJSC_VPR_REF)"
+      err "Could not find the VTJSC of schema $CUSTOM_SCHEMA_ID"
       exit 1
     fi
 
-    ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v1/credential-types" \
+    # The v2 body takes the credential and the revocation flag only. The name,
+    # the version and the attributes come from the schema.
+    ANONCREDS_RESULT=$(curl -sf -X POST "${ADMIN_API}/v2/anoncreds/credential-definitions" \
       -H 'Content-Type: application/json' \
-      -d "{\"name\": \"${ANONCREDS_NAME}\", \"version\": \"${ANONCREDS_VERSION}\", \"relatedJsonSchemaCredentialId\": \"${VTJSC_CRED_ID}\", \"supportRevocation\": ${ANONCREDS_SUPPORT_REVOCATION}}")
+      -d "{\"relatedJsonSchemaCredentialId\": \"${VTJSC_CRED_ID}\", \"supportRevocation\": ${ANONCREDS_SUPPORT_REVOCATION}}")
     ANONCREDS_CRED_DEF_ID=$(echo "$ANONCREDS_RESULT" | jq -r '.id // empty')
     if [ -z "$ANONCREDS_CRED_DEF_ID" ]; then
       err "Failed to create AnonCreds credential definition. Response: $ANONCREDS_RESULT"

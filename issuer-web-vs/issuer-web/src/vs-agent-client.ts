@@ -1,28 +1,9 @@
 import { Config } from "./config";
 
 export interface AgentInfo {
-  publicDid: string;
-  label: string;
+  did?: string;
+  version: string;
   [key: string]: unknown;
-}
-
-export interface VtjscCredential {
-  id: string;
-  credentialSubject?: {
-    jsonSchema?: { $ref: string } | string;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
-
-export interface VtjscEntry {
-  credential: VtjscCredential;
-  schemaId: string;
-  [key: string]: unknown;
-}
-
-export interface VtjscListResponse {
-  data: VtjscEntry[];
 }
 
 export interface CredentialOfferClaim {
@@ -33,26 +14,30 @@ export interface CredentialOfferClaim {
 
 export interface CredentialOfferResponse {
   credentialExchangeId: string;
-  url: string;
+  invitation: Record<string, unknown>;
   shortUrl: string;
 }
 
-export interface CreateCredentialTypeRequest {
-  name: string;
-  version: string;
-  attributes?: string[];
-  relatedJsonSchemaCredentialId?: string;
-  supportRevocation: boolean;
+export interface CreateCredentialDefinitionRequest {
+  relatedJsonSchemaCredentialId: string;
+  supportRevocation?: boolean;
 }
 
-export interface CredentialType {
+export interface CredentialDefinition {
   id: string;
   name: string;
   version: string;
-  relatedJsonSchemaCredentialId?: string;
-  [key: string]: unknown;
+  attributes: string[];
+  supportRevocation: boolean;
+  relatedJsonSchemaCredentialId: string;
 }
 
+// Every v2 list answers one page. The caller repeats the call with nextCursor
+// until the agent answers null.
+export interface CredentialDefinitionPage {
+  items: CredentialDefinition[];
+  nextCursor: string | null;
+}
 
 export class VsAgentClient {
   private baseUrl: string;
@@ -86,37 +71,39 @@ export class VsAgentClient {
   }
 
   async getAgent(): Promise<AgentInfo> {
-    return this.request<AgentInfo>("GET", "/v1/agent");
-  }
-
-  async getJsonSchemaCredentials(): Promise<VtjscListResponse> {
-    return this.request<VtjscListResponse>(
-      "GET",
-      "/v1/vt/json-schema-credentials"
-    );
+    return this.request<AgentInfo>("GET", "/v2/agent/info");
   }
 
   async createCredentialOfferInvitation(
     credentialDefinitionId: string,
     claims: CredentialOfferClaim[]
   ): Promise<CredentialOfferResponse> {
+    // The agent waits for an explicit accept call unless autoAccept is true. This
+    // application runs no issuer step of its own, so the agent must issue the
+    // credential on its own.
     return this.request<CredentialOfferResponse>(
       "POST",
-      "/v1/invitation/credential-offer",
-      { credentialDefinitionId, claims }
+      "/v2/didcomm/credential-offer",
+      { credentialDefinitionId, claims, autoAccept: true }
     );
   }
 
-  async getCredentialTypes(): Promise<CredentialType[]> {
-    return this.request<CredentialType[]>("GET", "/v1/credential-types");
+  async listCredentialDefinitions(
+    cursor?: string
+  ): Promise<CredentialDefinitionPage> {
+    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return this.request<CredentialDefinitionPage>(
+      "GET",
+      `/v2/anoncreds/credential-definitions${query}`
+    );
   }
 
-  async createCredentialType(
-    params: CreateCredentialTypeRequest
-  ): Promise<CredentialType> {
-    return this.request<CredentialType>(
+  async createCredentialDefinition(
+    params: CreateCredentialDefinitionRequest
+  ): Promise<CredentialDefinition> {
+    return this.request<CredentialDefinition>(
       "POST",
-      "/v1/credential-types",
+      "/v2/anoncreds/credential-definitions",
       params
     );
   }

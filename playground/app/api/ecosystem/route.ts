@@ -13,18 +13,23 @@ export const dynamic = "force-dynamic";
 
 // Live picture of the demo ecosystem, assembled server-side from public
 // sources: each service's DID document (for the canonical did:webvh DID)
-// and the network indexer (trust registry, credential schema, permission
+// and the network indexer (ecosystem, credential schema, participant
 // tree). Everything is best-effort — a missing upstream just yields nulls
 // and the page renders without the live extras.
+//
+// The v4 chain modules replace the earlier model: an Ecosystem holds the
+// credential schemas, and a Participant entry replaces a permission. The
+// indexer answers these under /v4.
 
-type TrustRegistryEntry = { id: number; did: string };
-type SchemaEntry = { id: number; tr_id: number; json_schema: string };
-type PermissionEntry = {
+type EcosystemEntry = { id: number; did: string; archived: string | null };
+type SchemaEntry = { id: number; ecosystem_id: number; json_schema: string };
+type ParticipantEntry = {
   id: number;
-  type: string;
+  role: string;
   did: string | null;
-  validator_perm_id: number | null;
+  validator_participant_id: number | null;
   revoked: string | null;
+  slashed: string | null;
 };
 
 export async function GET() {
@@ -39,34 +44,37 @@ export async function GET() {
     ]),
   );
 
-  // 2. Find the trust registry the organization controls (lowest id wins,
-  //    matching the deploy workflow's duplicate-archiving convention)
+  // 2. Find the Ecosystem the organization controls (lowest id wins, which
+  //    matches the archiving convention of the deploy workflow)
   const orgDid = services["organization-vs"].did;
-  let trustRegistry: { id: number; url: string } | null = null;
+  let ecosystem: { id: number; url: string } | null = null;
   if (orgDid) {
-    const trList = await fetchJson<{ trust_registries?: TrustRegistryEntry[] }>(
-      `${INDEXER_URL}/verana/tr/v1/list?only_active=true&response_max_size=1024`,
+    const ecoList = await fetchJson<{ ecosystems?: EcosystemEntry[] }>(
+      `${INDEXER_URL}/v4/ecosystem/list?response_max_size=1024`,
     );
-    const tr = (trList?.trust_registries ?? [])
-      .filter((t) => t.did === orgDid)
+    const eco = (ecoList?.ecosystems ?? [])
+      .filter((e) => e.did === orgDid && !e.archived)
       .sort((a, b) => a.id - b.id)[0];
-    if (tr) {
-      trustRegistry = { id: tr.id, url: `${FRONTEND_URL}/tr/${tr.id}` };
+    if (eco) {
+      ecosystem = { id: eco.id, url: `${FRONTEND_URL}/ecosystems/${eco.id}` };
     }
   }
 
-  // 3. The credential schema published under that trust registry
+  // 3. The credential schema published under that Ecosystem
   let schema: {
     id: number;
     url: string;
     jsonUrl: string;
     json: string | null;
   } | null = null;
-  if (trustRegistry) {
+  if (ecosystem) {
+    const ecosystemId = ecosystem.id;
     const csList = await fetchJson<{ schemas?: SchemaEntry[] }>(
-      `${INDEXER_URL}/verana/cs/v1/list?tr_id=${trustRegistry.id}`,
+      `${INDEXER_URL}/v4/credential-schema/list?response_max_size=1024`,
     );
-    const cs = (csList?.schemas ?? []).sort((a, b) => a.id - b.id)[0];
+    const cs = (csList?.schemas ?? [])
+      .filter((s) => s.ecosystem_id === ecosystemId)
+      .sort((a, b) => a.id - b.id)[0];
     if (cs) {
       let json: string | null = null;
       try {
@@ -76,31 +84,31 @@ export async function GET() {
       }
       schema = {
         id: cs.id,
-        url: `${FRONTEND_URL}/tr/cs/${cs.id}`,
-        jsonUrl: `${INDEXER_URL}/verana/cs/v1/js/${cs.id}`,
+        url: `${FRONTEND_URL}/credential-schemas/${cs.id}`,
+        jsonUrl: `${INDEXER_URL}/v4/credential-schema/get/${cs.id}`,
         json,
       };
     }
   }
 
-  // 4. The schema's permission tree (ecosystem root, issuers, verifiers)
-  let permissions: {
+  // 4. The participant tree of that schema (ecosystem root, issuers, verifiers)
+  let participants: {
     id: number;
-    type: string;
+    role: string;
     did: string | null;
-    validatorPermId: number | null;
+    validatorParticipantId: number | null;
   }[] = [];
   if (schema) {
-    const permList = await fetchJson<{ permissions?: PermissionEntry[] }>(
-      `${INDEXER_URL}/verana/perm/v1/list?schema_id=${schema.id}`,
+    const ppList = await fetchJson<{ participants?: ParticipantEntry[] }>(
+      `${INDEXER_URL}/v4/participant/list?schema_id=${schema.id}&participant_state=ACTIVE&response_max_size=1024`,
     );
-    permissions = (permList?.permissions ?? [])
-      .filter((p) => !p.revoked)
+    participants = (ppList?.participants ?? [])
+      .filter((p) => !p.revoked && !p.slashed)
       .map((p) => ({
         id: p.id,
-        type: p.type,
+        role: p.role,
         did: p.did,
-        validatorPermId: p.validator_perm_id,
+        validatorParticipantId: p.validator_participant_id,
       }))
       .sort((a, b) => a.id - b.id);
   }
@@ -108,9 +116,9 @@ export async function GET() {
   return NextResponse.json({
     network: NETWORK,
     services,
-    trustRegistry,
+    ecosystem,
     schema,
     participantsUrl: schema ? `${FRONTEND_URL}/participants/${schema.id}` : null,
-    permissions,
+    participants,
   });
 }

@@ -34,6 +34,7 @@ npm install
 echo "Starting Issuer Web on port ${ISSUER_WEB_PORT}..."
 VS_AGENT_ADMIN_URL="http://localhost:${VS_AGENT_ADMIN_PORT}" \
   ORG_VS_PUBLIC_URL="${ORG_VS_PUBLIC_URL:-}" \
+  ORG_VS_PUBLIC_PORT="${ORG_VS_PUBLIC_PORT:-}" \
   PORT="${ISSUER_WEB_PORT}" \
   ISSUER_WEB_PORT="${ISSUER_WEB_PORT}" \
   SERVICE_NAME="${SERVICE_NAME}" \

@@ -79,8 +79,8 @@ export function createRoutes(
         claims
       );
 
-      // Use shortUrl for QR (full URL is too large for QR codes)
-      const qrUrl = offerResponse.shortUrl || offerResponse.url;
+      // Use shortUrl for QR (the invitation itself is too large for QR codes)
+      const qrUrl = offerResponse.shortUrl;
       const qrDataUrl = await QRCode.toDataURL(qrUrl, {
         width: 300,
         margin: 2,

@@ -19,17 +19,17 @@ import { config } from "../config";
 
 type EcoService = { did: string | null; agentUrl: string };
 
-type EcoPermission = {
+type EcoParticipant = {
   id: number;
-  type: string;
+  role: string;
   did: string | null;
-  validatorPermId: number | null;
+  validatorParticipantId: number | null;
 };
 
 type EcosystemInfo = {
   network: string;
   services: Record<string, EcoService>;
-  trustRegistry: { id: number; url: string } | null;
+  ecosystem: { id: number; url: string } | null;
   schema: {
     id: number;
     url: string;
@@ -37,7 +37,7 @@ type EcosystemInfo = {
     json: string | null;
   } | null;
   participantsUrl: string | null;
-  permissions: EcoPermission[];
+  participants: EcoParticipant[];
 };
 
 /* ------------------------------------------------------------------ */
@@ -49,7 +49,7 @@ const SERVICES = [
     id: "organization-vs",
     name: "Organization",
     role: "Trust Anchor",
-    desc: "Registers with the Ecosystem, creates the Trust Registry and publishes the credential schema",
+    desc: "Creates the Ecosystem, publishes the credential schema and validates the other services",
     icon: Building2,
     color: "text-amber-600 bg-amber-50",
   },
@@ -87,7 +87,7 @@ const SERVICES = [
   },
 ] as const;
 
-const PERM_BADGE: Record<string, string> = {
+const ROLE_BADGE: Record<string, string> = {
   ECOSYSTEM: "text-amber-700 bg-amber-100",
   ISSUER: "text-violet-700 bg-violet-100",
   VERIFIER: "text-purple-700 bg-purple-100",
@@ -101,14 +101,14 @@ function shortDid(did: string, max = 44): string {
   return `${did.slice(0, head)}...${did.slice(-tail)}`;
 }
 
-function PermBadge({ type }: { type: string }) {
+function RoleBadge({ role }: { role: string }) {
   return (
     <span
       className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide ${
-        PERM_BADGE[type] ?? "text-gray-600 bg-gray-100"
+        ROLE_BADGE[role] ?? "text-gray-600 bg-gray-100"
       }`}
     >
-      {type.replace(/_/g, " ")}
+      {role.replace(/_/g, " ")}
     </span>
   );
 }
@@ -128,7 +128,7 @@ export default function EcosystemSection() {
       .catch(() => setEco(null));
   }, []);
 
-  // Label on-chain permissions with the service names when the DID matches
+  // Label each on-chain participant with its service name when the DID matches
   const didToName = new Map<string, string>();
   if (eco) {
     for (const s of SERVICES) {
@@ -137,15 +137,15 @@ export default function EcosystemSection() {
     }
   }
 
-  const root = eco?.permissions.find((p) => p.type === "ECOSYSTEM") ?? null;
+  const root = eco?.participants.find((p) => p.role === "ECOSYSTEM") ?? null;
   const children = root
-    ? (eco?.permissions ?? []).filter(
-        (p) => p.id !== root.id && p.validatorPermId === root.id,
+    ? (eco?.participants ?? []).filter(
+        (p) => p.id !== root.id && p.validatorParticipantId === root.id,
       )
-    : (eco?.permissions ?? []);
+    : (eco?.participants ?? []);
 
   const frontendLinks = [
-    { label: "Trust Registry", href: eco?.trustRegistry?.url, icon: Landmark },
+    { label: "Ecosystem", href: eco?.ecosystem?.url, icon: Landmark },
     { label: "Credential Schema", href: eco?.schema?.url, icon: ScrollText },
     { label: "Participant Tree", href: eco?.participantsUrl, icon: ListTree },
   ].filter((l): l is { label: string; href: string; icon: typeof Landmark } =>
@@ -156,10 +156,10 @@ export default function EcosystemSection() {
     <>
       <p className="text-gray-600 mb-6 leading-relaxed">
         This playground connects to five live services. The{" "}
-        <strong>Organization</strong> below is the trust anchor: it registered
-        with the Verana Ecosystem, <strong>created a Trust Registry</strong> on
-        the network, <strong>published the credential schema</strong> used by
-        these demos, and granted the issuer and verifier permissions. The four
+        <strong>Organization</strong> below is the trust anchor: it{" "}
+        <strong>created an Ecosystem</strong> on the network,{" "}
+        <strong>published the credential schema</strong> used by these demos,
+        and validated the participant entry of each other service. The four
         child services inherit trust from it: two <strong>Issuers</strong> that
         create credentials and two <strong>Verifiers</strong> that validate
         them.
@@ -232,7 +232,7 @@ export default function EcosystemSection() {
         </h3>
         <p className="text-sm text-gray-500 mb-4">
           Everything the Organization anchored is public. Inspect it on the
-          Verana {eco?.network ?? "testnet"} frontend:
+          Verana {eco?.network ?? "devnet"} frontend:
         </p>
 
         {eco === undefined ? (
@@ -267,7 +267,7 @@ export default function EcosystemSection() {
             </p>
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm">
               <div className="flex items-center gap-2 flex-wrap">
-                <PermBadge type={root.type} />
+                <RoleBadge role={root.role} />
                 <span className="font-medium text-gray-900">
                   {(root.did && didToName.get(root.did)) ?? "Ecosystem root"}
                 </span>
@@ -280,7 +280,7 @@ export default function EcosystemSection() {
               <ul className="mt-3 ml-2 border-l-2 border-gray-200 pl-4 space-y-2.5">
                 {children.map((p) => (
                   <li key={p.id} className="flex items-center gap-2 flex-wrap">
-                    <PermBadge type={p.type} />
+                    <RoleBadge role={p.role} />
                     <span className="text-gray-700">
                       {(p.did && didToName.get(p.did)) ?? "Participant"}
                     </span>

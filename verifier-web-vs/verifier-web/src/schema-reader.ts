@@ -1,8 +1,4 @@
-import { VsAgentClient, VtjscEntry } from "./vs-agent-client";
-import {
-  discoverVtjscFromDidDocument,
-  resolveSchemaRef,
-} from "@verana-demos/vt-schema";
+import { discoverVtjscFromDidDocument } from "@verana-demos/vt-schema";
 
 export interface SchemaAttribute {
   name: string;
@@ -18,82 +14,35 @@ export interface SchemaInfo {
   credentialDefinitionId?: string;
 }
 
-// Discover the custom schema VTJSC from the organization-vs public DID document.
-// Falls back to the admin API when no public URL is configured (fully local setup).
+// Discover the custom schema VTJSC from the organization-vs DID document.
 export async function discoverSchema(
-  client: VsAgentClient,
   customSchemaBaseId: string,
   orgPublicUrl?: string,
-  orgClient?: VsAgentClient,
+  orgLocalPublicUrl?: string,
   issuerPublicUrl?: string
 ): Promise<SchemaInfo> {
-  let vtjscId: string;
-  let jsonSchema: Record<string, unknown>;
-  let credDefId: string | undefined;
-  let schemaId: string | undefined;
-
-  if (orgPublicUrl) {
-    // Discover from the public DID document (works through the public ingress).
-    const didDocUrl = `${orgPublicUrl}/.well-known/did.json`;
-    console.log(`Fetching organization-vs DID document from ${didDocUrl}`);
-    const discovered = await discoverVtjscFromDidDocument(
-      didDocUrl,
-      customSchemaBaseId
+  // The agent of organization-vs publishes each VTJSC as a
+  // LinkedVerifiablePresentation service of its DID document. A local setup reads
+  // that same document from another host, so one discovery path serves both setups.
+  const orgBaseUrl = orgPublicUrl || orgLocalPublicUrl;
+  if (!orgBaseUrl) {
+    throw new Error(
+      "Cannot discover the schema: no public URL for organization-vs. " +
+        "Set ORG_VS_PUBLIC_URL, or set ORG_VS_PUBLIC_PORT for a local setup."
     );
-    vtjscId = discovered.vtjscId;
-    jsonSchema = discovered.jsonSchema;
-    console.log(
-      `Discovered VTJSC ${vtjscId} for credential schema ${discovered.schemaId}`
-    );
-  } else {
-    // Fallback: the org admin API (a fully local setup with no public ingress).
-    const schemaSource = orgClient || client;
-    const vtjscList = await schemaSource.getJsonSchemaCredentials();
-
-    // v4 names a VTJSC after the numeric credential schema id, so the base id of the schema file
-    // no longer appears in it. With one custom VTJSC that is the one; otherwise match the title.
-    const candidates = vtjscList.data.filter((v: VtjscEntry) =>
-      /schemas-\d+-jsc\.json$/.test(v.credential.id)
-    );
-    if (candidates.length === 0) {
-      const availableIds = vtjscList.data.map((v: VtjscEntry) => v.credential.id);
-      throw new Error(
-        `No custom VTJSC found for base ID "${customSchemaBaseId}". ` +
-          `Available VTJSCs: ${JSON.stringify(availableIds)}`
-      );
-    }
-
-    let picked: { entry: VtjscEntry; schema: Record<string, unknown> } | undefined;
-    for (const candidate of candidates) {
-      const rawRef = candidate.credential.credentialSubject?.jsonSchema;
-      const ref =
-        typeof rawRef === "object" && rawRef !== null
-          ? (rawRef as { $ref: string }).$ref
-          : (rawRef as string | undefined);
-      if (!ref) continue;
-      const resolved = await resolveSchemaRef(ref);
-      const title = String(resolved.jsonSchema.title ?? "").toLowerCase();
-      if (
-        candidates.length === 1 ||
-        title.replace(/\s+/g, "-").includes(customSchemaBaseId.toLowerCase())
-      ) {
-        picked = { entry: candidate, schema: resolved.jsonSchema };
-        break;
-      }
-    }
-    if (!picked) {
-      throw new Error(
-        `None of the ${candidates.length} custom VTJSCs names "${customSchemaBaseId}"`
-      );
-    }
-    vtjscId = picked.entry.credential.id;
-    jsonSchema = picked.schema;
-    schemaId = picked.entry.schemaId;
-    credDefId = (picked.entry as Record<string, unknown>)
-      .credentialDefinitionId as string | undefined;
   }
 
-  const schema = jsonSchema;
+  const didDocUrl = `${orgBaseUrl}/.well-known/did.json`;
+  console.log(`Fetching organization-vs DID document from ${didDocUrl}`);
+  const discovered = await discoverVtjscFromDidDocument(
+    didDocUrl,
+    customSchemaBaseId
+  );
+  const vtjscId = discovered.vtjscId;
+  const schema = discovered.jsonSchema;
+  console.log(
+    `Discovered VTJSC ${vtjscId} for credential schema ${discovered.schemaId}`
+  );
 
   const csProps = (
     schema.properties as Record<string, unknown> | undefined
@@ -136,7 +85,7 @@ export async function discoverSchema(
 
   return {
     vtjscId,
-    schemaId: schemaId || vtjscId.replace(/-jsc\.json$/, ""),
+    schemaId: vtjscId.replace(/-jsc\.json$/, ""),
     title,
     attributes,
     credentialDefinitionId,

@@ -33,23 +33,26 @@ interface BasicMessageRecord {
 
 /**
  * `didcomm.action-menu.perform-received` — the holder picked a contextual menu
- * option. The plaintext Action Menu `perform` message carries the option id in
- * its `name` field.
+ * option. The event names the option in `name`.
  */
-interface ExtensionMessageEvent {
+interface PerformReceivedData {
   connectionId: string;
   threadId?: string;
-  message: { name?: string; [key: string]: unknown };
+  name: string;
+  params?: Record<string, string>;
 }
 
 /**
  * `didcomm.presentations.state-updated` — the presentation record plus
  * previousState. The holder's answer arrives here, not as a chat message:
  * the agent verifies the presentation and reports the revealed attributes.
+ * The record names the connection of the exchange, not the chat connection, so
+ * the chatbot correlates on `proofExchangeId`.
  */
 interface PresentationRecord {
   proofExchangeId: string;
   connectionId?: string;
+  role: string;
   state: string;
   previousState: string | null;
   verified: boolean;
@@ -69,15 +72,21 @@ export function createWebhookRouter(
 ): Router {
   const router = Router();
 
-  // Playground: create a QR session (fresh invitation + pollable session id)
+  // Playground: create a QR session (agent public DID + pollable session id).
+  // No v2 route mints a bare connection invitation, so the caller shows the
+  // public DID of the agent and the wallet dials that DID itself.
   router.post("/api/invitation", async (_req: Request, res: Response) => {
     try {
-      const { url } = await client.createConnectionInvitation();
+      const { did } = await client.getAgent();
+      if (!did) {
+        res.status(503).json({ error: "The agent has no public DID yet" });
+        return;
+      }
       const session = playground.createSession();
-      res.json({ sessionId: session.sessionId, invitationUrl: url });
+      res.json({ sessionId: session.sessionId, agentDid: did });
     } catch (error) {
-      console.error("Failed to create playground invitation:", error);
-      res.status(500).json({ error: "Failed to create invitation" });
+      console.error("Failed to create playground session:", error);
+      res.status(500).json({ error: "Failed to create session" });
     }
   });
 
@@ -136,13 +145,9 @@ async function handleEvent(
     }
 
     case MESSAGE_RECEIVED: {
+      // The event carries no DIDComm message id, so the chatbot cannot
+      // acknowledge the message with a receipt.
       const message = event.data as unknown as BasicMessageRecord;
-      // Tell the holder the message arrived and was read.
-      chatbot
-        .sendReceipts(message.connectionId, message.id)
-        .catch((err: unknown) =>
-          console.error("Failed to send receipts:", err)
-        );
       if (message.content) {
         await chatbot.onTextMessage(message.connectionId, message.content);
       }
@@ -150,8 +155,8 @@ async function handleEvent(
     }
 
     case MENU_PERFORM_RECEIVED: {
-      const performed = event.data as unknown as ExtensionMessageEvent;
-      const menuId = performed.message?.name ?? "";
+      const performed = event.data as unknown as PerformReceivedData;
+      const menuId = performed.name ?? "";
       if (menuId) {
         await chatbot.onMenuSelect(performed.connectionId, menuId);
       }
@@ -162,7 +167,18 @@ async function handleEvent(
       const presentation = event.data as unknown as PresentationRecord;
       // The agent sets `verified` once it has checked the presentation, which
       // is the state the record reaches as `done`.
-      if (presentation.state !== "done" || !presentation.connectionId) return;
+      if (presentation.role !== "verifier" || presentation.state !== "done") {
+        return;
+      }
+      const connectionId = chatbot.takeProofConnection(
+        presentation.proofExchangeId
+      );
+      if (!connectionId) {
+        console.warn(
+          `No chat connection for proof exchange ${presentation.proofExchangeId}`
+        );
+        return;
+      }
       if (!presentation.verified) {
         console.warn(
           `Presentation ${presentation.proofExchangeId} did not verify`
@@ -170,8 +186,8 @@ async function handleEvent(
         return;
       }
       const claims = toClaimMap(presentation.claims);
-      playground.markVerified(presentation.connectionId, claims);
-      await chatbot.onProofSubmit(presentation.connectionId, claims);
+      playground.markVerified(connectionId, claims);
+      await chatbot.onProofSubmit(connectionId, claims);
       return;
     }
 

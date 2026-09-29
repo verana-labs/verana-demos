@@ -22,11 +22,13 @@ import { config } from "./config";
 /*  API helpers                                                        */
 /* ------------------------------------------------------------------ */
 
-async function fetchChatbotInvitation(endpoint: string) {
+// A chatbot has no invitation to fetch any more: the v2 API mints none, and a
+// wallet dials the public DID of the agent. The QR code carries that DID.
+async function fetchChatbotDid(endpoint: string) {
   const res = await fetch(endpoint);
-  if (!res.ok) throw new Error(`Failed to fetch invitation`);
+  if (!res.ok) throw new Error(`Failed to fetch the DID of the chatbot`);
   const data = await res.json();
-  return { url: data.url as string };
+  return { url: data.did as string };
 }
 
 async function fetchVerifierWebInvitation() {
@@ -39,14 +41,15 @@ async function fetchVerifierWebInvitation() {
   };
 }
 
-// Creates a playground session on the verifier chatbot: a fresh connection
-// invitation plus a session id to poll for the verified attributes.
+// Creates a playground session on the verifier chatbot: the public DID of its
+// agent plus a session id to poll for the verified attributes. The v2 API mints
+// no invitation, so the wallet dials that DID.
 async function fetchVerifierChatbotSession() {
   const res = await fetch("/api/verifier-chatbot/invitation", {
     method: "POST",
   });
   if (!res.ok) throw new Error("Failed to create verification session");
-  return (await res.json()) as { sessionId: string; invitationUrl: string };
+  return (await res.json()) as { sessionId: string; agentDid: string };
 }
 
 // The verifier services report the presented attributes under `attributes`;
@@ -251,7 +254,7 @@ export default function PlaygroundPage() {
                 "Your credential is stored in your wallet",
               ]}
               fetchInvitation={() =>
-                fetchChatbotInvitation("/api/issuer-chatbot/invitation")
+                fetchChatbotDid("/api/issuer-chatbot/invitation")
               }
               resultLabel="Connected! Follow the chat in Hologram."
             />

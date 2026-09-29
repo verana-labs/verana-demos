@@ -1,8 +1,5 @@
 import { VsAgentClient } from "./vs-agent-client";
-import {
-  discoverVtjscFromDidDocument,
-  resolveSchemaRef,
-} from "@verana-demos/vt-schema";
+import { discoverVtjscFromDidDocument } from "@verana-demos/vt-schema";
 
 export interface SchemaAttribute {
   name: string;
@@ -20,73 +17,33 @@ export interface SchemaInfo {
 }
 
 // Discover the custom schema VTJSC from the organization-vs public DID document.
-// Falls back to the admin API when no public URL is configured (fully local setup).
 export async function discoverSchema(
   client: VsAgentClient,
   customSchemaBaseId: string,
-  orgPublicUrl?: string,
-  orgClient?: VsAgentClient
+  orgPublicUrl?: string
 ): Promise<SchemaInfo> {
-  let vtjscId: string;
-  let jsonSchema: Record<string, unknown>;
-
-  if (orgPublicUrl) {
-    // Discover from the public DID document (works through the public ingress).
-    const didDocUrl = `${orgPublicUrl}/.well-known/did.json`;
-    console.log(`Fetching organization-vs DID document from ${didDocUrl}`);
-    const discovered = await discoverVtjscFromDidDocument(
-      didDocUrl,
-      customSchemaBaseId
+  // The admin API publishes no list of JSON Schema Credentials, so the DID
+  // document of organization-vs is the only source. A local setup must expose
+  // organization-vs on a URL that this process can reach.
+  if (!orgPublicUrl) {
+    throw new Error(
+      "ORG_VS_PUBLIC_URL is not set. The chatbot reads the custom schema from the " +
+        "organization-vs DID document, so it needs the public URL of that agent."
     );
-    vtjscId = discovered.vtjscId;
-    jsonSchema = discovered.jsonSchema;
-    console.log(
-      `Discovered VTJSC ${vtjscId} for credential schema ${discovered.schemaId}`
-    );
-  } else {
-    // Fallback: the org admin API (a fully local setup with no public ingress).
-    const schemaSource = orgClient || client;
-    const vtjscList = await schemaSource.getJsonSchemaCredentials();
-
-    // v4 names a VTJSC after the numeric credential schema id, so the base id of the schema file
-    // no longer appears in it. With one custom VTJSC that is the one; otherwise match the title.
-    const candidates = vtjscList.data.filter((v) =>
-      /schemas-\d+-jsc\.json$/.test(v.credential.id)
-    );
-    if (candidates.length === 0) {
-      const availableIds = vtjscList.data.map((v) => v.credential.id);
-      throw new Error(
-        `No custom VTJSC found for base ID "${customSchemaBaseId}". ` +
-          `Available VTJSCs: ${JSON.stringify(availableIds)}`
-      );
-    }
-
-    let picked: { id: string; schema: Record<string, unknown> } | undefined;
-    for (const candidate of candidates) {
-      const rawRef = candidate.credential.credentialSubject?.jsonSchema;
-      const ref =
-        typeof rawRef === "object" && rawRef !== null
-          ? (rawRef as { $ref: string }).$ref
-          : (rawRef as string | undefined);
-      if (!ref) continue;
-      const resolved = await resolveSchemaRef(ref);
-      const title = String(resolved.jsonSchema.title ?? "").toLowerCase();
-      if (
-        candidates.length === 1 ||
-        title.replace(/\s+/g, "-").includes(customSchemaBaseId.toLowerCase())
-      ) {
-        picked = { id: candidate.credential.id, schema: resolved.jsonSchema };
-        break;
-      }
-    }
-    if (!picked) {
-      throw new Error(
-        `None of the ${candidates.length} custom VTJSCs names "${customSchemaBaseId}"`
-      );
-    }
-    vtjscId = picked.id;
-    jsonSchema = picked.schema;
   }
+
+  // Discover from the public DID document (works through the public ingress).
+  const didDocUrl = `${orgPublicUrl}/.well-known/did.json`;
+  console.log(`Fetching organization-vs DID document from ${didDocUrl}`);
+  const discovered = await discoverVtjscFromDidDocument(
+    didDocUrl,
+    customSchemaBaseId
+  );
+  const vtjscId = discovered.vtjscId;
+  const jsonSchema = discovered.jsonSchema;
+  console.log(
+    `Discovered VTJSC ${vtjscId} for credential schema ${discovered.schemaId}`
+  );
 
   const schema = jsonSchema;
 
@@ -130,7 +87,7 @@ export async function discoverSchema(
   );
 
   // Ensure a local AnonCreds credential type exists on the issuer agent
-  const credentialDefinitionId = await ensureCredentialType(client, vtjscId, title);
+  const credentialDefinitionId = await ensureCredentialType(client, vtjscId);
 
   return {
     vtjscId,
@@ -143,11 +100,10 @@ export async function discoverSchema(
 
 async function ensureCredentialType(
   client: VsAgentClient,
-  vtjscId: string,
-  name: string
+  vtjscId: string
 ): Promise<string> {
   // Check if a credential type already exists for this VTJSC
-  const existingTypes = await client.getCredentialTypes();
+  const existingTypes = await client.getCredentialDefinitions();
   const existing = existingTypes.find(
     (ct) => ct.relatedJsonSchemaCredentialId === vtjscId
   );
@@ -158,11 +114,10 @@ async function ensureCredentialType(
     return existing.id;
   }
 
-  // Create a new credential type
+  // Create a new credential type. The agent reads the name, the version and the
+  // attributes from the VTJSC, so the caller sends neither of them.
   console.log(`Creating anoncreds credential type for VTJSC ${vtjscId}...`);
-  const created = await client.createCredentialType({
-    name,
-    version: "1.0",
+  const created = await client.createCredentialDefinition({
     relatedJsonSchemaCredentialId: vtjscId,
     supportRevocation: false,
   });

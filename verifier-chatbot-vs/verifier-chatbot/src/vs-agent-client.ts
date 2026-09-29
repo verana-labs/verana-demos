@@ -1,49 +1,15 @@
 import { Config } from "./config";
 
 export interface AgentInfo {
-  publicDid: string;
-  label: string;
-  [key: string]: unknown;
-}
-
-export interface VtjscCredential {
-  id: string;
-  credentialSubject?: {
-    jsonSchema?: { $ref: string } | string;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
-
-export interface VtjscEntry {
-  credential: VtjscCredential;
-  schemaId: string;
-  [key: string]: unknown;
-}
-
-export interface VtjscListResponse {
-  data: VtjscEntry[];
-}
-
-export interface CreateCredentialTypeRequest {
-  name: string;
+  did?: string;
   version: string;
-  attributes?: string[];
-  relatedJsonSchemaCredentialId?: string;
-  supportRevocation: boolean;
-}
-
-export interface CredentialType {
-  id: string;
-  name: string;
-  version: string;
-  relatedJsonSchemaCredentialId?: string;
   [key: string]: unknown;
 }
 
 export interface ContextualMenuEntry {
-  id: string;
+  name: string;
   title: string;
+  description: string;
 }
 
 export interface ContextualMenu {
@@ -58,17 +24,22 @@ export interface SendMessageRequest {
   contextualMenu?: ContextualMenu;
 }
 
-export interface RequestedProofItem {
-  id?: string;
-  type: string;
+export interface RequestedCredential {
   credentialDefinitionId?: string;
+  jsonSchemaCredentialId?: string;
   attributes?: string[];
 }
 
-export interface SendProofRequestParams {
-  connectionId: string;
-  requestedProofItems: RequestedProofItem[];
-  contextualMenu?: ContextualMenu;
+export interface CreatePresentationRequestParams {
+  requestedCredentials: RequestedCredential[];
+  requireNonRevocation?: boolean;
+  autoAccept?: boolean;
+}
+
+export interface CreatePresentationRequestResponse {
+  proofExchangeId: string;
+  invitation: Record<string, unknown>;
+  shortUrl: string;
 }
 
 export class VsAgentClient {
@@ -103,91 +74,37 @@ export class VsAgentClient {
   }
 
   async getAgent(): Promise<AgentInfo> {
-    return this.request<AgentInfo>("GET", "/v1/agent");
-  }
-
-  /** Create a fresh out-of-band connection invitation. */
-  async createConnectionInvitation(): Promise<{ url: string }> {
-    try {
-      return await this.request<{ url: string }>("POST", "/v1/invitation");
-    } catch {
-      // Older VS-Agent versions only expose the (deprecated) GET variant.
-      return this.request<{ url: string }>("GET", "/v1/invitation");
-    }
-  }
-
-  async getJsonSchemaCredentials(): Promise<VtjscListResponse> {
-    return this.request<VtjscListResponse>(
-      "GET",
-      "/v1/vt/json-schema-credentials"
-    );
-  }
-
-  async sendReceipts(
-    connectionId: string,
-    messageId: string,
-    states: string[] = ["received", "viewed"]
-  ): Promise<void> {
-    const now = new Date().toISOString();
-    await this.request<unknown>("POST", "/v1/message", {
-      type: "receipts",
-      connectionId,
-      receipts: states.map((state) => ({
-        message_id: messageId,
-        state,
-        timestamp: now,
-      })),
-    });
+    return this.request<AgentInfo>("GET", "/v2/agent/info");
   }
 
   async sendMessage(params: SendMessageRequest): Promise<void> {
-    await this.request<unknown>("POST", "/v1/message", {
-      type: "text",
+    await this.request<{ id: string }>("POST", "/v2/didcomm/basic-messages", {
       connectionId: params.connectionId,
       content: params.content,
     });
 
     if (params.contextualMenu) {
-      await this.request<unknown>("POST", "/v1/message", {
-        type: "contextual-menu-update",
+      await this.request<{ id: string }>("POST", "/v2/didcomm/action-menu", {
         connectionId: params.connectionId,
-        title: params.contextualMenu.title,
-        description: params.contextualMenu.description,
-        options: params.contextualMenu.options,
+        menu: params.contextualMenu,
       });
     }
   }
 
-  async getCredentialTypes(): Promise<CredentialType[]> {
-    return this.request<CredentialType[]>("GET", "/v1/credential-types");
-  }
-
-  async createCredentialType(
-    params: CreateCredentialTypeRequest
-  ): Promise<CredentialType> {
-    return this.request<CredentialType>(
+  /**
+   * Create a presentation request. The agent answers with an out-of-band
+   * invitation. The request belongs to a new exchange, so the holder opens a
+   * second connection for it. The caller sends `shortUrl` to the chat and keeps
+   * the chat connection under `proofExchangeId`.
+   */
+  async createPresentationRequest(
+    params: CreatePresentationRequestParams
+  ): Promise<CreatePresentationRequestResponse> {
+    return this.request<CreatePresentationRequestResponse>(
       "POST",
-      "/v1/credential-types",
+      "/v2/didcomm/presentation-request",
       params
     );
-  }
-
-  async sendProofRequest(params: SendProofRequestParams): Promise<void> {
-    await this.request<unknown>("POST", "/v1/message", {
-      type: "identity-proof-request",
-      connectionId: params.connectionId,
-      requestedProofItems: params.requestedProofItems,
-    });
-
-    if (params.contextualMenu) {
-      await this.request<unknown>("POST", "/v1/message", {
-        type: "contextual-menu-update",
-        connectionId: params.connectionId,
-        title: params.contextualMenu.title,
-        description: params.contextualMenu.description,
-        options: params.contextualMenu.options,
-      });
-    }
   }
 
   async waitForReady(

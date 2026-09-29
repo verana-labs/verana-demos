@@ -31,18 +31,33 @@ interface BasicMessageRecord {
 
 /**
  * `didcomm.action-menu.perform-received` — the holder picked a contextual menu
- * option. The plaintext Action Menu `perform` message carries the option id in
- * its `name` field.
+ * option. The event names the option in `name`.
  */
-interface ExtensionMessageEvent {
+interface PerformReceivedData {
   connectionId: string;
   threadId?: string;
-  message: { name?: string; [key: string]: unknown };
+  name: string;
+  params?: Record<string, string>;
+}
+
+/**
+ * `didcomm.credential-exchanges.state-updated` — the credential exchange record
+ * plus previousState. The record carries the connection of the exchange, not the
+ * chat connection, so the chatbot correlates on `credentialExchangeId`.
+ */
+interface CredentialExchangeRecord {
+  credentialExchangeId: string;
+  role: string;
+  state: string;
+  previousState: string | null;
+  [key: string]: unknown;
 }
 
 const CONNECTION_STATE_UPDATED = "didcomm.connections.state-updated";
 const MESSAGE_RECEIVED = "didcomm.basic-messages.message-received";
 const MENU_PERFORM_RECEIVED = "didcomm.action-menu.perform-received";
+const CREDENTIAL_EXCHANGE_STATE_UPDATED =
+  "didcomm.credential-exchanges.state-updated";
 
 export function createWebhookRouter(chatbot: Chatbot): Router {
   const router = Router();
@@ -81,13 +96,9 @@ async function handleEvent(
     }
 
     case MESSAGE_RECEIVED: {
+      // The event carries no DIDComm message id, so the chatbot cannot
+      // acknowledge the message with a receipt.
       const message = event.data as unknown as BasicMessageRecord;
-      // Tell the holder the message arrived and was read.
-      chatbot
-        .sendReceipts(message.connectionId, message.id)
-        .catch((err: unknown) =>
-          console.error("Failed to send receipts:", err)
-        );
       if (message.content) {
         await chatbot.onTextMessage(message.connectionId, message.content);
       }
@@ -95,17 +106,24 @@ async function handleEvent(
     }
 
     case MENU_PERFORM_RECEIVED: {
-      const performed = event.data as unknown as ExtensionMessageEvent;
-      const menuId = performed.message?.name ?? "";
+      const performed = event.data as unknown as PerformReceivedData;
+      const menuId = performed.name ?? "";
       if (menuId) {
         await chatbot.onMenuSelect(performed.connectionId, menuId);
       }
       return;
     }
 
+    case CREDENTIAL_EXCHANGE_STATE_UPDATED: {
+      const record = event.data as unknown as CredentialExchangeRecord;
+      if (record.role !== "issuer" || record.state !== "done") return;
+      await chatbot.onCredentialIssued(record.credentialExchangeId);
+      return;
+    }
+
     default:
-      // Receipts, profile disclosure, credential exchanges and indexer
-      // notifications need no action from this chatbot.
+      // Receipts, profile disclosure, presentations and indexer notifications
+      // need no action from this chatbot.
       return;
   }
 }
