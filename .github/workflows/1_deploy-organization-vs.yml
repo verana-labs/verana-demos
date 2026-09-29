@@ -16,9 +16,10 @@ on:
         default: all
       corporation-id:
         description: >-
-          organization-vs's Corporation ID. Leave empty on the first run of
-          "bootstrap-corporation" — it prints the new ID, which you must then
-          set here (and in organization-vs/config.env) for every later run.
+          organization-vs's Corporation ID. Leave it empty and the workflow
+          creates one, which it then uses for the rest of the same run, so "all"
+          works on a fresh chain. Give an ID to reuse an existing Corporation;
+          the workflow creates a new one when the chain does not hold it.
         required: false
         type: string
 
@@ -152,15 +153,39 @@ jobs:
           source common/common.sh
           set_network_vars "$NETWORK"
 
-          if [ -n "${CORPORATION_ID:-}" ]; then
-            ok "CORPORATION_ID=$CORPORATION_ID already set — skipping (resolving policy_address to confirm it exists)"
-            resolve_corporation "$CORPORATION_ID"
-            ensure_operator_authorization "$CORPORATION" "$USER_ACC_ADDR" "$OA_MSGS_ECOSYSTEM"
+          # A configured id is a hint, not a fact: a wiped chain no longer holds
+          # it. Confirm it first, and create a Corporation when it is absent, so
+          # one 'all' run works on a fresh chain.
+          if [ -n "${CORPORATION_ID:-}" ] && resolve_corporation "$CORPORATION_ID"; then
+            ok "CORPORATION_ID=$CORPORATION_ID exists — keeping it"
           else
+            if [ -n "${CORPORATION_ID:-}" ]; then
+              warn "The chain holds no Corporation $CORPORATION_ID — creating a new one"
+            fi
             create_corporation "did:example:organization-vs-${CHAIN_ID}" "$EGF_DOC_URL"
             echo "::notice::Corporation created: CORPORATION_ID=$CORPORATION_ID"
-            echo "::notice::Set 'corporation-id: $CORPORATION_ID' as the workflow input (and CORPORATION_ID in organization-vs/config.env) before running 'deploy'."
           fi
+          ensure_operator_authorization "$CORPORATION" "$USER_ACC_ADDR" "$OA_MSGS_ECOSYSTEM"
+
+          # Each step runs its own shell, so the id reaches the later steps only
+          # through GITHUB_ENV. Record it for organization-vs/config.env as well,
+          # which the local scripts and a later single-step run read.
+          echo "CORPORATION_ID=${CORPORATION_ID}" >> "$GITHUB_ENV"
+          echo "::notice::Set CORPORATION_ID=\"\${CORPORATION_ID:-${CORPORATION_ID}}\" in organization-vs/config.env to keep it across runs."
+
+      # The placeholder steps above run before the bootstrap step, so on an "all"
+      # run they substitute an empty Corporation id. Render both files again with
+      # the id the bootstrap step recorded, or the agent starts with no
+      # Corporation and every transaction it signs fails the authority check.
+      - name: Re-resolve the Corporation id for the chart
+        if: inputs.step == 'all'
+        run: |
+          sed -e "s/__NETWORK__/${NETWORK}/g" -e "s/__VS_NAME__/${VS_NAME}/g" \
+            -e "s/__CORPORATION_ID__/${CORPORATION_ID}/g" \
+            organization-vs/deployment.yaml > /tmp/deployment-resolved.yaml
+          yq 'del(.chartSource, .chartVersion)' /tmp/deployment-resolved.yaml > /tmp/helm-values.yaml
+          yq -i '.didcommLabel = env(SERVICE_NAME)' /tmp/helm-values.yaml
+          echo "veranaCorporationId is now: $(yq '.veranaCorporationId' /tmp/helm-values.yaml)"
 
       # -----------------------------------------------------------------------
       # DEPLOY: Install/upgrade VS Agent via Helm
