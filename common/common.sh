@@ -163,7 +163,7 @@ submit_tx() {
   local raw_output
   raw_output=$("$@" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-    --fees "$FEES" --gas auto --node "$NODE_RPC" \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
     --output json -y 2>&1) || true
 
   local result
@@ -451,7 +451,7 @@ create_corporation() {
   local fund_raw
   fund_raw=$(veranad tx bank send "$USER_ACC_ADDR" "$CORPORATION" 100000000uvna \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-    --fees "$FEES" --gas auto --node "$NODE_RPC" \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
     --output json -y 2>&1) || true
   local fund_tx
   fund_tx=$(echo "$fund_raw" | extract_tx_json | jq -r '.txhash // empty')
@@ -605,7 +605,7 @@ create_ecosystem() {
   raw_output=$(veranad tx ec create-ecosystem \
     "$corporation" "$did" en "$doc_url" "$doc_digest" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-    --fees "$FEES" --gas auto --node "$NODE_RPC" \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
     --output json -y 2>&1) || true
   echo "$raw_output" >&2
   local tx_hash
@@ -670,7 +670,7 @@ create_credential_schema() {
     --verifier-validation-validity-period '{"value":0}' \
     --holder-validation-validity-period '{"value":0}' \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-    --fees "$FEES" --gas auto --node "$NODE_RPC" \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
     --output json -y 2>&1) || true
   echo "$raw_output" >&2
   local tx_hash
@@ -712,7 +712,7 @@ create_root_participant() {
     "$schema_id" "$did" 0 0 0 \
     --corporation "$corporation" --effective-from "$now" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-    --fees "$FEES" --gas auto --node "$NODE_RPC" \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
     --output json -y 2>&1) || true
   echo "$raw_output" >&2
   local tx_hash
@@ -766,7 +766,7 @@ start_participant_op() {
     --corporation "$corporation" \
     "${vsoa_args[@]}" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-    --fees "$FEES" --gas auto --node "$NODE_RPC" \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
     --output json -y 2>&1) || true
   echo "$raw_output" >&2
   local tx_hash
@@ -778,10 +778,21 @@ start_participant_op() {
   ok "TX submitted: $tx_hash"
   sleep 6
 
+  # The broadcast answer only reports that CheckTx accepted the transaction. Read
+  # the result, or an execution failure such as "out of gas" appears later as a
+  # missing event, which hides the cause.
+  local tx_json code
+  tx_json=$(veranad query tx "$tx_hash" --node "$NODE_RPC" --output json 2>/dev/null || echo "")
+  code=$(echo "$tx_json" | jq -r '.code // empty' 2>/dev/null)
+  if [ -n "$code" ] && [ "$code" != "0" ]; then
+    err "StartParticipantOP failed on chain (code $code): $(echo "$tx_json" | jq -r '.raw_log // "no log"' 2>/dev/null | head -c 300)"
+    return 1
+  fi
+
   local participant_id
   participant_id=$(extract_tx_event "$tx_hash" "start_participant_op" "participant_id")
   if [ -z "$participant_id" ]; then
-    err "Could not extract participant ID"
+    err "Could not extract participant ID from tx $tx_hash (code ${code:-unknown})"
     return 1
   fi
   ok "Participant OP started: id=$participant_id (state: PENDING)"
@@ -812,7 +823,7 @@ set_participant_validated() {
     --corporation "$corporation" \
     --validation-fees 0 --issuance-fees 0 --verification-fees 0 \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-    --fees "$FEES" --gas auto --node "$NODE_RPC" \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
     --output json -y 2>&1) || true
   echo "$raw_output" >&2
   local tx_hash
@@ -874,7 +885,7 @@ self_create_participant() {
     --effective-from "$(future_timestamp)" \
     "${vsoa_args[@]}" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-    --fees "$FEES" --gas auto --node "$NODE_RPC" \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
     --output json -y 2>&1) || true
   echo "$raw_output" >&2
   local tx_hash
