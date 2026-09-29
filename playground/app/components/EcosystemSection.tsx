@@ -5,6 +5,7 @@ import {
   Building2,
   MessageSquare,
   Globe,
+  BookOpen,
   ExternalLink,
   FileJson,
   Landmark,
@@ -29,9 +30,16 @@ type EcoParticipant = {
 type EcosystemInfo = {
   network: string;
   services: Record<string, EcoService>;
-  ecosystem: { id: number; url: string } | null;
+  ecosystem: {
+    id: number;
+    corporationId: number;
+    url: string;
+    governanceFrameworkUrl: string | null;
+  } | null;
   schema: {
     id: number;
+    title: string | null;
+    description: string | null;
     url: string;
     jsonUrl: string;
     json: string | null;
@@ -146,6 +154,11 @@ export default function EcosystemSection() {
 
   const frontendLinks = [
     { label: "Ecosystem", href: eco?.ecosystem?.url, icon: Landmark },
+    {
+      label: "Governance Framework",
+      href: eco?.ecosystem?.governanceFrameworkUrl ?? undefined,
+      icon: BookOpen,
+    },
     { label: "Credential Schema", href: eco?.schema?.url, icon: ScrollText },
     { label: "Participant Tree", href: eco?.participantsUrl, icon: ListTree },
   ].filter((l): l is { label: string; href: string; icon: typeof Landmark } =>
@@ -231,8 +244,13 @@ export default function EcosystemSection() {
           Live on the Verana network
         </h3>
         <p className="text-sm text-gray-500 mb-4">
-          Everything the Organization anchored is public. Inspect it on the
-          Verana {eco?.network ?? "devnet"} frontend:
+          Everything the Organization anchored is public. Its Corporation
+          {eco?.ecosystem ? ` (id ${eco.ecosystem.corporationId})` : ""} owns
+          the Ecosystem
+          {eco?.ecosystem ? ` (id ${eco.ecosystem.id})` : ""}, which publishes
+          the credential schema
+          {eco?.schema?.title ? ` "${eco.schema.title}"` : ""}. Inspect it on
+          the Verana {eco?.network ?? "devnet"} frontend:
         </p>
 
         {eco === undefined ? (

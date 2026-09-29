@@ -4,25 +4,43 @@ import { useEffect, useState } from "react";
 import { ShieldCheck, ShieldX, Building2, Server } from "lucide-react";
 
 // Compact Proof-of-Trust for one demo service, mirroring the Resolve-a-DID
-// card on verana.io: trust status, the service identity (ECS-Service
-// claims), and the organization operating it (ECS-Org claims) — resolved
-// live against the network resolver via /api/pot/[serviceId].
+// card on verana.io: trust status, the service identity (Service credential
+// claims), the organization operating it (Organization credential claims),
+// and the Participant roles of the service. /api/pot/[serviceId] reads it
+// from the v4 trust resolution of the network indexer.
 
 type Pot = {
   did: string;
-  trustStatus: string;
+  trusted: boolean;
+  evaluatedAtTime: string;
+  expiresAtTime: string | null;
+  corporationId: number;
   service: {
     name: string | null;
     type: string | null;
     description: string | null;
   } | null;
   org: {
+    kind: "organization" | "persona";
     name: string | null;
     countryCode: string | null;
     registryId: string | null;
     address: string | null;
   } | null;
+  roles: { id: number; role: string; credentialSchemaId: number }[];
 };
+
+const ROLE_BADGE: Record<string, string> = {
+  ECOSYSTEM: "text-amber-700 bg-amber-100",
+  ISSUER: "text-violet-700 bg-violet-100",
+  VERIFIER: "text-purple-700 bg-purple-100",
+};
+
+/** Date of an ISO timestamp, for the "until" hint of a trusted answer. */
+function shortDate(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toISOString().slice(0, 10);
+}
 
 /** ISO 3166-1 alpha-2 country code as an emoji flag (e.g. "CH" -> 🇨🇭). */
 function countryFlag(code: string): string | null {
@@ -66,7 +84,7 @@ export default function ServiceTrustCard({ serviceId }: { serviceId: string }) {
     );
   }
 
-  const trusted = pot.trustStatus === "TRUSTED";
+  const trusted = pot.trusted;
   const flag = pot.org?.countryCode ? countryFlag(pot.org.countryCode) : null;
 
   return (
@@ -84,6 +102,22 @@ export default function ServiceTrustCard({ serviceId }: { serviceId: string }) {
             Untrusted
           </span>
         )}
+        {trusted && pot.expiresAtTime ? (
+          <span className="text-[10px] text-gray-400">
+            until {shortDate(pot.expiresAtTime)}
+          </span>
+        ) : null}
+        {pot.roles.map((r) => (
+          <span
+            key={r.id}
+            title={`Participant ${r.id} on credential schema ${r.credentialSchemaId}`}
+            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide ${
+              ROLE_BADGE[r.role] ?? "text-gray-600 bg-gray-100"
+            }`}
+          >
+            {r.role.replace(/_/g, " ")}
+          </span>
+        ))}
         <span
           className="font-mono text-[10px] text-gray-400 truncate"
           title={pot.did}
@@ -146,7 +180,7 @@ export default function ServiceTrustCard({ serviceId }: { serviceId: string }) {
             </>
           ) : (
             <p className="text-xs text-gray-400">
-              No organization credential presented.
+              No Organization credential presented.
             </p>
           )}
         </div>

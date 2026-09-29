@@ -17,12 +17,29 @@ export const dynamic = "force-dynamic";
 // tree). Everything is best-effort — a missing upstream just yields nulls
 // and the page renders without the live extras.
 //
-// The v4 chain modules replace the earlier model: an Ecosystem holds the
-// credential schemas, and a Participant entry replaces a permission. The
-// indexer answers these under /v4.
+// The v4 chain modules replace the earlier model: a Corporation owns the
+// DIDs, an Ecosystem holds the credential schemas and its governance
+// framework, and a Participant entry replaces a permission. The indexer
+// answers these under /v4.
 
-type EcosystemEntry = { id: number; did: string; archived: string | null };
-type SchemaEntry = { id: number; ecosystem_id: number; json_schema: string };
+type EcosystemEntry = {
+  id: number;
+  did: string;
+  corporation_id: number;
+  archived: string | null;
+  active_version: number;
+  versions?: {
+    version: number;
+    documents?: { url: string; language: string }[];
+  }[];
+};
+type SchemaEntry = {
+  id: number;
+  ecosystem_id: number;
+  title?: string;
+  description?: string;
+  json_schema: string;
+};
 type ParticipantEntry = {
   id: number;
   role: string;
@@ -47,7 +64,12 @@ export async function GET() {
   // 2. Find the Ecosystem the organization controls (lowest id wins, which
   //    matches the archiving convention of the deploy workflow)
   const orgDid = services["organization-vs"].did;
-  let ecosystem: { id: number; url: string } | null = null;
+  let ecosystem: {
+    id: number;
+    corporationId: number;
+    url: string;
+    governanceFrameworkUrl: string | null;
+  } | null = null;
   if (orgDid) {
     const ecoList = await fetchJson<{ ecosystems?: EcosystemEntry[] }>(
       `${INDEXER_URL}/v4/ecosystem/list?response_max_size=1024`,
@@ -56,13 +78,24 @@ export async function GET() {
       .filter((e) => e.did === orgDid && !e.archived)
       .sort((a, b) => a.id - b.id)[0];
     if (eco) {
-      ecosystem = { id: eco.id, url: `${FRONTEND_URL}/ecosystems/${eco.id}` };
+      // The governance framework is the first document of the active version
+      const active = (eco.versions ?? []).find(
+        (v) => v.version === eco.active_version,
+      );
+      ecosystem = {
+        id: eco.id,
+        corporationId: eco.corporation_id,
+        url: `${FRONTEND_URL}/ecosystems/${eco.id}`,
+        governanceFrameworkUrl: active?.documents?.[0]?.url ?? null,
+      };
     }
   }
 
   // 3. The credential schema published under that Ecosystem
   let schema: {
     id: number;
+    title: string | null;
+    description: string | null;
     url: string;
     jsonUrl: string;
     json: string | null;
@@ -84,8 +117,12 @@ export async function GET() {
       }
       schema = {
         id: cs.id,
+        title: cs.title ?? null,
+        description: cs.description ?? null,
         url: `${FRONTEND_URL}/credential-schemas/${cs.id}`,
-        jsonUrl: `${INDEXER_URL}/v4/credential-schema/get/${cs.id}`,
+        // /js/{id} serves the bare JSON Schema; /get/{id} wraps it in the
+        // chain record.
+        jsonUrl: `${INDEXER_URL}/v4/credential-schema/js/${cs.id}`,
         json,
       };
     }
