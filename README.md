@@ -87,7 +87,7 @@ Workflows are numbered to indicate deployment order. **Run them in order** when 
 
 Only workflow 1 bootstraps a Corporation, and only on a new ecosystem: the agent needs `VERANA_CORPORATION_ID` at boot, but the Corporation exists only once that step has run, so it prints the new id for `organization-vs/config.env`. The children have no such step — their `deploy` resolves the same Corporation from organization-vs's DID.
 
-The `onboard-*` step of a child does four things in order: it provisions the Service HOLDER entry, validates that onboarding on organization-vs with the Service claims, takes the ISSUER or VERIFIER role on the "example" schema, and then triggers the trust resolver again. The chain evaluates the service at the first event that names it, before the DID Document serves the Service credential, and an untrusted answer has no expiry. The last step waits for the presentation and sends `TriggerResolver` from the Corporation operator, then polls the indexer until it answers `"trusted": true`. Workflow 1 does the same for the Organization credential of organization-vs.
+The `onboard-*` step of a child does three things in order: it provisions the Service HOLDER entry, validates that onboarding on organization-vs with the Service claims, and takes the ISSUER or VERIFIER role on the "example" schema. The agent then publishes its Service credential and sends `TriggerResolver` by itself, so no script asks the chain to evaluate a service.
 
 ### Deployment
 
@@ -139,7 +139,7 @@ curl -s -X POST https://idx.devnet.verana.network/v4/verifiable-trust/resolve \
 
 ## Shared Code
 
-- `common/common.sh` — Shared shell helpers: logging, network config, funding, transaction submission, group proposals, Corporation creation and grant checks (`ensure_operator_authorization`), Ecosystem / credential schema / root participant creation, `StartParticipantOP` and `SelfCreateParticipant`, participant and schema discovery, `resolve_corporation_for_did`, `build_service_claims`, the onboarding-flow validation calls (`validate_pending_flow` and `set_participant_validated`), the VTJSC lookup that replaces the removed v1 route (`fetch_vtjsc_credential_id`), and the trust resolution helpers (`wait_for_linked_presentation`, `trigger_resolver` and `wait_for_trusted`).
+- `common/common.sh` — Shared shell helpers: logging, network config, funding, transaction submission, group proposals, Corporation creation and grant checks (`ensure_operator_authorization`), Ecosystem / credential schema / root participant creation, `StartParticipantOP` and `SelfCreateParticipant`, participant and schema discovery, `resolve_corporation_for_did`, `build_service_claims`, the onboarding-flow validation calls (`validate_pending_flow` and `set_participant_validated`), and the VTJSC lookup that replaces the removed v1 route (`fetch_vtjsc_credential_id`).
 - `common/vt-schema/` — Shared TypeScript module (`@verana-demos/vt-schema`) used by the four applications to discover the custom schema. v4 publishes a VTJSC as `#vpr-schemas-<schemaId>-vtjsc-vp`, named after the numeric credential schema id, and points at its JSON Schema with `vpr:verana:<chain-id>:cs:<schemaId>`, which the module resolves against the indexer of that same chain. Each application depends on it through `file:../../common/vt-schema`, so their Docker builds take the repository root as context.
 
 ## Playground
