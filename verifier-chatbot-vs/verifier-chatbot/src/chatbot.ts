@@ -9,8 +9,7 @@ export class Chatbot {
   private schema: SchemaInfo;
   private config: Config;
 
-  // The holder opens a second connection for the presentation exchange, and the
-  // exchange events name only the exchange. This map gives back the chat
+  // The exchange events name only the exchange. This map gives back the chat
   // connection that asked for the presentation.
   private chatByProofExchange = new Map<string, string>();
 
@@ -248,6 +247,9 @@ export class Chatbot {
         `Sending proof request to ${connectionId} for attributes: ${attributeNames.join(", ")}`
       );
 
+      // The request goes out on the chat connection, so the wallet shows it in
+      // this conversation. The map holds the chat connection, because an event
+      // carries the exchange id only.
       const request = await this.client.createPresentationRequest({
         requestedCredentials: [
           {
@@ -255,16 +257,10 @@ export class Chatbot {
             attributes: attributeNames,
           },
         ],
+        connectionId,
         autoAccept: true,
       });
       this.chatByProofExchange.set(request.proofExchangeId, connectionId);
-
-      // The request lives on its own exchange, so the holder must open the link.
-      await this.sendText(
-        connectionId,
-        `Open this link to present your credential: ${request.shortUrl}`,
-        SessionState.REQUEST_PROOF
-      );
     } catch (error) {
       console.error(
         `Failed to send proof request to ${connectionId}:`,

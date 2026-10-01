@@ -9,8 +9,7 @@ export class Chatbot {
   private schema: SchemaInfo;
   private config: Config;
 
-  // The holder opens a second connection for the credential exchange, and the
-  // exchange events name only the exchange. This map gives back the chat
+  // The exchange events name only the exchange. This map gives back the chat
   // connection that asked for the credential.
   private chatByCredentialExchange = new Map<string, string>();
 
@@ -252,20 +251,17 @@ export class Chatbot {
         value,
       }));
 
+      // The offer goes out on the chat connection, so the wallet shows it in
+      // this conversation. The session reaches DONE when the exchange reports
+      // `done`. The map holds the chat connection, because an event carries the
+      // exchange id only.
       const offer = await this.client.createCredentialOffer({
         credentialDefinitionId: this.schema.credentialDefinitionId,
         claims: claimsArray,
+        connectionId,
         autoAccept: true,
       });
       this.chatByCredentialExchange.set(offer.credentialExchangeId, connectionId);
-
-      // The offer lives on its own exchange, so the holder must open the link.
-      // The session reaches DONE when the exchange reports `done`.
-      await this.sendText(
-        connectionId,
-        `Open this link to receive your credential: ${offer.shortUrl}`,
-        SessionState.ISSUE
-      );
     } catch (error) {
       console.error(`Failed to issue credential for ${connectionId}:`, error);
       this.store.updateSession(connectionId, {

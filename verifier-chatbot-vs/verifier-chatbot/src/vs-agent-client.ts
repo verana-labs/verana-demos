@@ -32,14 +32,17 @@ export interface RequestedCredential {
 
 export interface CreatePresentationRequestParams {
   requestedCredentials: RequestedCredential[];
+  /** An established connection to send the request on. */
+  connectionId?: string;
   requireNonRevocation?: boolean;
   autoAccept?: boolean;
 }
 
 export interface CreatePresentationRequestResponse {
   proofExchangeId: string;
-  invitation: Record<string, unknown>;
-  shortUrl: string;
+  /** The agent omits both fields when the request names a `connectionId`. */
+  invitation?: Record<string, unknown>;
+  shortUrl?: string;
 }
 
 export class VsAgentClient {
@@ -92,10 +95,11 @@ export class VsAgentClient {
   }
 
   /**
-   * Create a presentation request. The agent answers with an out-of-band
-   * invitation. The request belongs to a new exchange, so the holder opens a
-   * second connection for it. The caller sends `shortUrl` to the chat and keeps
-   * the chat connection under `proofExchangeId`.
+   * Create a presentation request. With a `connectionId` the agent sends the
+   * request on that connection, and the wallet shows it in the same
+   * conversation. The caller then sends no link, and the holder opens no second
+   * connection. Without one the agent answers an out-of-band invitation, and
+   * the caller shows its `shortUrl`.
    */
   async createPresentationRequest(
     params: CreatePresentationRequestParams

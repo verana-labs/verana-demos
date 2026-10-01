@@ -54,13 +54,16 @@ export interface SendMessageRequest {
 export interface CreateCredentialOfferRequest {
   credentialDefinitionId: string;
   claims: CredentialIssuanceClaim[];
+  /** An established connection to send the offer on. */
+  connectionId?: string;
   autoAccept?: boolean;
 }
 
 export interface CreateCredentialOfferResponse {
   credentialExchangeId: string;
-  invitation: Record<string, unknown>;
-  shortUrl: string;
+  /** The agent omits both fields when the request names a `connectionId`. */
+  invitation?: Record<string, unknown>;
+  shortUrl?: string;
 }
 
 export class VsAgentClient {
@@ -124,10 +127,11 @@ export class VsAgentClient {
   }
 
   /**
-   * Create a credential offer. The agent answers with an out-of-band invitation.
-   * The offer belongs to a new exchange, so the holder opens a second connection
-   * for it. The caller sends `shortUrl` to the chat and keeps the chat
-   * connection under `credentialExchangeId`.
+   * Create a credential offer. With a `connectionId` the agent sends the offer
+   * on that connection, and the wallet shows it in the same conversation. The
+   * caller then sends no link, and the holder opens no second connection.
+   * Without one the agent answers an out-of-band invitation, and the caller
+   * shows its `shortUrl`.
    */
   async createCredentialOffer(
     params: CreateCredentialOfferRequest

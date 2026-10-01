@@ -376,18 +376,6 @@ setup_veranad_account() {
 }
 
 # ---------------------------------------------------------------------------
-# Date helper (macOS + Linux compatible)
-# ---------------------------------------------------------------------------
-
-# Return a UTC timestamp N seconds in the future
-# Usage: future_timestamp [seconds]
-future_timestamp() {
-  local seconds=${1:-15}
-  date -u -v+"${seconds}"S +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
-    || date -u -d "+${seconds} seconds" +"%Y-%m-%dT%H:%M:%SZ"
-}
-
-# ---------------------------------------------------------------------------
 # Corporation helpers (verana.co.v1 / verana.de.v1)
 # ---------------------------------------------------------------------------
 
@@ -704,13 +692,11 @@ create_root_participant() {
   local did=$3
 
   log "Creating root participant for schema $schema_id..."
-  local now
-  now=$(future_timestamp 15)
 
   local raw_output
   raw_output=$(veranad tx pp create-root-participant \
     "$schema_id" "$did" 0 0 0 \
-    --corporation "$corporation" --effective-from "$now" \
+    --corporation "$corporation" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
     --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
     --output json -y 2>&1) || true
@@ -875,14 +861,9 @@ self_create_participant() {
 
   log "Self-creating participant (role=$role) against validator $validator_participant_id..."
   local raw_output
-  # The chain makes effective_from mandatory on self-create-participant. Give it a
-  # small lead, so the value is still in the future when the block commits.
-  # CAUTION: a participant whose effective_from is null is INACTIVE, and the chain
-  # refuses to revoke it, to adjust it, and to create an entry that overlaps it.
   raw_output=$(veranad tx pp self-create-participant \
     "$role" "$validator_participant_id" "$did" \
     --corporation "$corporation" \
-    --effective-from "$(future_timestamp)" \
     "${vsoa_args[@]}" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
     --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \

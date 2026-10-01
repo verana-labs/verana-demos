@@ -1,6 +1,6 @@
 # Verana Demos
 
-Demo ecosystem with five Verifiable Services and an interactive playground, deployed via GitHub Actions to Kubernetes. Targets **Verana v4** implementation, currently on devnet. It runs vs-agent `v2.0.0-dev.72` against `veranad v0.10.5`.
+Demo ecosystem with five Verifiable Services and an interactive playground, deployed via GitHub Actions to Kubernetes. Targets **Verana v4** implementation, currently on devnet. It runs vs-agent `v2.0.0-pr766.7` against `veranad v0.10.5`.
 
 ## Architecture
 
@@ -20,7 +20,9 @@ ecs-ecosystem            ← Shared ECS authority (verana-deploy, not this repo)
 
 **The agent reacts to chain events.** Scripts no longer drive credential issuance through the admin API. They create the on-chain objects and the Participant entries; the agent notices, publishes its VTJSCs, self-issues what it may, and answers the onboarding processes.
 
-**The applications use the v2 administration API.** vs-agent `v2.0.0-dev.71` removed the v1 API. Every endpoint now lives under `/v2`, a list answers with `{items, nextCursor}`, and `GET /v2/agent/info` reports the DID in a field named `did`. No endpoint creates a bare connection invitation any more. A wallet dials the public DID of the agent instead, and a credential offer or a presentation request supplies the `shortUrl` that a QR code carries.
+**The applications use the v2 administration API.** vs-agent `v2.0.0-dev.71` removed the v1 API. Every endpoint now lives under `/v2`, a list answers with `{items, nextCursor}`, and `GET /v2/agent/info` reports the DID in a field named `did`. No endpoint creates a bare connection invitation any more. A wallet dials the public DID of the agent instead.
+
+**A chatbot sends an offer or a request on the chat connection.** The two chatbots pass the `connectionId` of the chat, so the agent sends the credential offer or the presentation request on that connection, and the wallet shows it in the same conversation. A chatbot sends no link, and a holder opens no second connection. The two web applications omit `connectionId`, because a web page holds no connection yet. The agent then answers an out of band invitation, and the page shows its `shortUrl` as a QR code.
 
 **Each agent composes its own ECS claims.** The `ECS_CLAIMS_*` variables of a container hold the claims of the credentials that agent will carry ([VSA-VTI-CFG-ENV-ECS]), and the agent sends them on the onboarding request it opens. A validator signs what it receives, so no script builds a claim set any more. A standalone agent reads the organization, persona and service groups; a delegated agent reads only the service group. The agent derives every `*DigestSri` claim from the matching `*Uri` claim, so each URI must be reachable.
 
