@@ -42,7 +42,7 @@ veranaCorporationId: "__CORPORATION_ID__"
 agentMode: "standalone"
 # The shared ECS Ecosystem this service joins to obtain its own ECS
 # credentials — see verana-deploy/scripts/ecs-ecosystem (devnet only).
-trustedEcsEcosystemDids: "did:webvh:QmVWnZrJ3B5cR3oGhdBHcbE6YhYe9FHRGwaGxY7c2wPMFN:ecs-ecosystem.devnet.verana.network"
+trustedEcsEcosystemDids: "did:webvh:QmQueP3dCakEphRR694eYzZEhF53FvzPCPrdoHK3aMeFKh:ecs-ecosystem.devnet.verana.network"
 
 resources:
   requests:
