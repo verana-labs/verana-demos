@@ -81,10 +81,13 @@ export class VsAgentClient {
     // The agent waits for an explicit accept call unless autoAccept is true. This
     // application runs no issuer step of its own, so the agent must issue the
     // credential on its own.
+    //
+    // The agent mints a DIDComm v2 invitation when didcommVersion is absent. The
+    // holder wallet (Hologram) speaks DIDComm v1, so the application asks for v1.
     return this.request<CredentialOfferResponse>(
       "POST",
       "/v2/didcomm/credential-offer",
-      { credentialDefinitionId, claims, autoAccept: true }
+      { credentialDefinitionId, claims, autoAccept: true, didcommVersion: "v1" }
     );
   }
 

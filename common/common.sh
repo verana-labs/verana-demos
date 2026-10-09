@@ -44,7 +44,9 @@ set_network_vars() {
     devnet)
       CHAIN_ID="${CHAIN_ID:-vna-devnet-1}"
       NODE_RPC="${NODE_RPC:-https://rpc.devnet.verana.network}"
-      FEES="${FEES:-600000uvna}"
+      # Fixed fee of each operator tx. The chain minimum is 0.0025uvna per gas,
+      # so 20000uvna covers 8M gas.
+      FEES="${FEES:-20000uvna}"
       FAUCET_URL="https://faucet-vs.devnet.verana.network/invitation"
       INDEXER_URL="${INDEXER_URL:-https://idx.devnet.verana.network}"
       # The shared ECS Ecosystem VS Agent (verana-deploy/scripts/ecs-ecosystem).
@@ -435,9 +437,12 @@ create_corporation() {
   fi
   ok "Corporation created: id=$CORPORATION_ID policy_address=$CORPORATION"
 
+  # The Corporation pays the fees of every agent of the organization through
+  # their fee grants. At the VERANA_GAS_PRICE of the deployments (0.01uvna),
+  # 1 VNA pays for some 300 agent transactions.
   log "Funding corporation..."
   local fund_raw
-  fund_raw=$(veranad tx bank send "$USER_ACC_ADDR" "$CORPORATION" 100000000uvna \
+  fund_raw=$(veranad tx bank send "$USER_ACC_ADDR" "$CORPORATION" "${CORPORATION_FUNDING:-1000000uvna}" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
     --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
     --output json -y 2>&1) || true
@@ -447,7 +452,7 @@ create_corporation() {
     err "Failed to fund corporation. Raw output: $fund_raw"
     return 1
   fi
-  ok "Corporation funded (100 VNA): TX $fund_tx"
+  ok "Corporation funded (${CORPORATION_FUNDING:-1000000uvna}): TX $fund_tx"
   sleep 6
 
   log "Granting operator authorization to $USER_ACC_ADDR..."

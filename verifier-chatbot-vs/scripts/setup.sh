@@ -196,6 +196,7 @@ docker run --platform linux/amd64 -d \
   -e "ENABLE_PUBLIC_API_SWAGGER=true" \
   -e "EVENTS_WEBHOOK_URL=http://host.docker.internal:${CHATBOT_PORT}/events" \
   -e "VERANA_RPC_ENDPOINT_URL=${NODE_RPC}" \
+  -e "VERANA_GAS_PRICE=${VERANA_GAS_PRICE:-0.01uvna}" \
   -e "VERANA_INDEXER_BASE_URL=${INDEXER_URL}" \
   -e "VERANA_CHAIN_ID=${CHAIN_ID}" \
   -e "VERANA_ACCOUNT_MNEMONIC=${MNEMONIC}" \

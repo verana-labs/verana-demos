@@ -70,7 +70,7 @@ jobs:
       - name: Install veranad
         if: inputs.step != 'deploy-chatbot'
         run: |
-          VERANAD_VERSION="v0.10.5"
+          VERANAD_VERSION="v0.10.6"
           curl -sfL "https://github.com/verana-labs/verana-node/releases/download/${VERANAD_VERSION}/veranad-linux-amd64" \
             -o /usr/local/bin/veranad
           chmod +x /usr/local/bin/veranad

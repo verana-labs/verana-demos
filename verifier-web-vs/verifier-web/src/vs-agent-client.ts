@@ -23,6 +23,8 @@ export interface CreatePresentationRequestParams {
   requestedCredentials: RequestedCredential[];
   requireNonRevocation?: boolean;
   autoAccept?: boolean;
+  /** DIDComm envelope version of the invitation. The agent defaults to v2. */
+  didcommVersion?: "v1" | "v2";
 }
 
 export class VsAgentClient {

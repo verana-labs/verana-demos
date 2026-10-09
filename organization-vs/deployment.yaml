@@ -6,7 +6,7 @@
 # after running the "bootstrap-corporation" workflow step once).
 # Example: vs/devnet-example → __NETWORK__=devnet, __VS_NAME__=example
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v2.0.0-pr766.7
+chartVersion: v2.0.0-dev.91
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
@@ -16,7 +16,6 @@ replicas: 1
 
 adminPort: 3000
 didcommPort: 3001
-didcommInvitationImageUrl: "https://verana.io/logo.svg"
 publicDidMethod: "webvh"
 enablePublicApiSwagger: true
 
@@ -68,6 +67,10 @@ extraEnv:
   # The agent accepts a level name only: trace, debug, info, warn, error or off.
   - name: AGENT_LOG_LEVEL
     value: "debug"
+  # The agent defaults to 1uvna per gas, 400 times the chain minimum of
+  # 0.0025uvna. The Corporation pays these fees through the fee grants.
+  - name: VERANA_GAS_PRICE
+    value: "0.01uvna"
   - name: USE_CORS
     value: "true"
   # This agent's ONLY account. It is the vs_operator of the Participant entries

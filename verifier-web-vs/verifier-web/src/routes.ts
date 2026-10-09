@@ -62,6 +62,9 @@ export function createRoutes(
           },
         ],
         autoAccept: true,
+        // The holder wallet (Hologram) speaks DIDComm v1, so the page asks for a
+        // v1 invitation. The agent mints v2 when the field is absent.
+        didcommVersion: "v1",
       });
 
       const session = store.createSession(presResponse.proofExchangeId);
