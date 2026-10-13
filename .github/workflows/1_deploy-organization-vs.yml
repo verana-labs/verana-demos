@@ -331,12 +331,12 @@ jobs:
           fi
 
           # --- Complete the onboarding process --------------------------------
-          if has_completed_flow "http://localhost:3101" "$AGENT_DID"; then
+          if has_completed_flow "http://localhost:3101" "$AGENT_DID" "$ECS_ORG_SCHEMA_ID"; then
             ok "Already validated — skipping"
           else
             # The agent composed its Organization claims from its ECS_CLAIMS_ORG_*
             # variables and sent them on the request, so this step only validates.
-            validate_pending_flow "http://localhost:3101" "$AGENT_DID"
+            validate_pending_flow "http://localhost:3101" "$AGENT_DID" "$ECS_ORG_SCHEMA_ID"
           fi
 
       # -----------------------------------------------------------------------

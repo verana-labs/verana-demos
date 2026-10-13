@@ -351,7 +351,7 @@ fi
 
 log "Step 4b: Validate the ECS onboarding on the Organization credential issuer"
 
-if has_completed_flow "$ECS_ORG_ISSUER_ADMIN_API" "$AGENT_DID"; then
+if has_completed_flow "$ECS_ORG_ISSUER_ADMIN_API" "$AGENT_DID" "$ECS_ORG_SCHEMA_ID"; then
   ok "Already validated — skipping"
 else
   log "Waiting for the agent to send the onboarding request (up to 60s)..."
@@ -359,7 +359,7 @@ else
 
   # The agent composed the Organization claims from its ECS_CLAIMS_ORG_*
   # variables and sent them on the request, so this step only validates.
-  if ! validate_pending_flow "$ECS_ORG_ISSUER_ADMIN_API" "$AGENT_DID"; then
+  if ! validate_pending_flow "$ECS_ORG_ISSUER_ADMIN_API" "$AGENT_DID" "$ECS_ORG_SCHEMA_ID"; then
     err "Could not validate on the Organization credential issuer ($ECS_ORG_ISSUER_ADMIN_API)."
     err "Is it port-forwarded? kubectl port-forward -n vna-devnet-1 svc/ecs-org-issuer 3101:3000"
     exit 1

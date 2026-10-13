@@ -655,7 +655,7 @@ create_credential_schema() {
   local raw_output
   raw_output=$(veranad tx cs create-credential-schema \
     "$ecosystem_id" "$schema_json" "$issuer_mode" "$verifier_mode" "$holder_mode" \
-    1 tu sha384 \
+    2 uvna sha384 \
     --corporation "$corporation" \
     --issuer-grantor-validation-validity-period '{"value":0}' \
     --verifier-grantor-validation-validity-period '{"value":0}' \
@@ -1148,11 +1148,16 @@ validate_pending_flow() {
 
 # Check whether a flow from a peer DID is already COMPLETED or VALIDATED
 # (idempotency: skip re-validating).
-# Usage: has_completed_flow <admin_api> <peer_did>
+# Usage: has_completed_flow <admin_api> <peer_did> [schema_id]
 has_completed_flow() {
   local admin_api=$1
   local peer_did=$2
+  local schema_id="${3:-}"
+  # Give the schema_id when you can. A peer keeps its finished flows on other
+  # schemas, for example on a schema that a new one replaced, and without the
+  # filter such a flow hides the pending flow on the new schema.
   local query="role=validator&peerDid=$(printf '%s' "$peer_did" | jq -sRr @uri)"
+  [ -n "$schema_id" ] && query="${query}&schemaId=${schema_id}"
 
   local flows
   flows=$(curl -sf "${admin_api}/v2/vt/flows?${query}" 2>/dev/null) || return 1
