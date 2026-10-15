@@ -1,9 +1,10 @@
 # Organization VS Agent deployment — Helm chart values (Verana v0.10.1+)
 #
 # Network (testnet/devnet) and service name are derived from the branch name.
-# The workflow substitutes __NETWORK__, __VS_NAME__ and __CORPORATION_ID__
-# placeholders at deploy time (CORPORATION_ID comes from config.env, set
-# after running the "bootstrap-corporation" workflow step once).
+# The workflow substitutes the __NETWORK__, __VS_NAME__, __CORPORATION_ID__
+# and __ECS_ECOSYSTEM_DID__ placeholders at deploy time (CORPORATION_ID comes
+# from config.env or the workflow input, and the ECS Ecosystem DID is read from
+# the ECS Ecosystem agent of the network).
 # Example: vs/devnet-example → __NETWORK__=devnet, __VS_NAME__=example
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
 chartVersion: v2.0.0-dev.91
@@ -41,8 +42,8 @@ veranaCorporationId: "__CORPORATION_ID__"
 
 agentMode: "standalone"
 # The shared ECS Ecosystem this service joins to obtain its own ECS
-# credentials — see verana-deploy/scripts/ecs-ecosystem (devnet only).
-trustedEcsEcosystemDids: "did:webvh:QmTjgAgrSEKmXDgyzQvzar92uwQvW8VSJV8ZS5SjzYqCxX:ecs-ecosystem.devnet.verana.network"
+# credentials — see verana-deploy/scripts/ecs-ecosystem.
+trustedEcsEcosystemDids: "__ECS_ECOSYSTEM_DID__"
 
 resources:
   requests:

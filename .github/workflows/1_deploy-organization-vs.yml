@@ -38,7 +38,7 @@ jobs:
             echo "::error::Branch vs/testnet-main is reserved. Deploy from 'main' branch instead."
             exit 1
           elif [ "$BRANCH" = "main" ]; then
-            NETWORK="devnet"
+            NETWORK="testnet"
             VS_NAME="main"
           elif [[ "$BRANCH" =~ ^vs/(testnet|devnet)- ]]; then
             SUFFIX="${BRANCH#vs/}"
@@ -65,10 +65,24 @@ jobs:
             echo "CORPORATION_ID=${{ inputs.corporation-id }}" >> "$GITHUB_ENV"
           fi
 
+      # The chart trusts the ECS Ecosystem by its DID, which changes on every
+      # wipe of that agent. Read it from the agent, so no file pins it.
+      - name: Resolve the ECS Ecosystem DID
+        run: |
+          source common/common.sh
+          set_network_vars "$NETWORK"
+          if [ -z "${ECS_ECOSYSTEM_DID:-}" ]; then
+            echo "::error::Could not read the ECS Ecosystem DID from ${ECS_ECOSYSTEM_PUBLIC_URL}. Deploy the ECS Ecosystem on ${NETWORK} first."
+            exit 1
+          fi
+          echo "ECS_ECOSYSTEM_DID=${ECS_ECOSYSTEM_DID}" >> "$GITHUB_ENV"
+          ok "ECS Ecosystem DID: $ECS_ECOSYSTEM_DID"
+
       - name: Resolve deployment.yaml placeholders
         run: |
           sed -e "s/__NETWORK__/${NETWORK}/g" -e "s/__VS_NAME__/${VS_NAME}/g" \
             -e "s/__CORPORATION_ID__/${CORPORATION_ID}/g" \
+            -e "s#__ECS_ECOSYSTEM_DID__#${ECS_ECOSYSTEM_DID}#g" \
             organization-vs/deployment.yaml > /tmp/deployment-resolved.yaml
           echo "--- Resolved deployment.yaml ---"
           cat /tmp/deployment-resolved.yaml
@@ -182,6 +196,7 @@ jobs:
         run: |
           sed -e "s/__NETWORK__/${NETWORK}/g" -e "s/__VS_NAME__/${VS_NAME}/g" \
             -e "s/__CORPORATION_ID__/${CORPORATION_ID}/g" \
+            -e "s#__ECS_ECOSYSTEM_DID__#${ECS_ECOSYSTEM_DID}#g" \
             organization-vs/deployment.yaml > /tmp/deployment-resolved.yaml
           yq 'del(.chartSource, .chartVersion)' /tmp/deployment-resolved.yaml > /tmp/helm-values.yaml
           yq -i '.didcommLabel = env(SERVICE_NAME)' /tmp/helm-values.yaml
@@ -262,19 +277,28 @@ jobs:
 
       # The Organization credential comes from the service the ECS Ecosystem
       # corporation assigned the ISSUER entry to, not from the ecosystem agent.
-      # That service belongs to verana-deploy and lives in the chain namespace,
-      # which is not the namespace of these demo services.
+      # That service belongs to verana-deploy and lives in the chain namespace.
+      # On devnet, that namespace is in the same cluster as these demo services,
+      # so the workflow can validate the onboarding by itself. On testnet, the
+      # issuer lives in another cluster, and this repository holds no kubeconfig
+      # for it on purpose: the validation then happens from that cluster.
       - name: Port-forward ecs-org-issuer admin API
         if: inputs.step == 'validate-ecs-onboarding' || inputs.step == 'all'
         run: |
           ECS_NAMESPACE="${ECS_NAMESPACE:-vna-${NETWORK}-1}"
+          if ! kubectl -n "$ECS_NAMESPACE" get svc ecs-org-issuer > /dev/null 2>&1; then
+            echo "::notice::ecs-org-issuer is not reachable from this cluster ($ECS_NAMESPACE). The onboarding is started here and validated from the cluster that hosts the issuer."
+            echo "ECS_ORG_ISSUER_ADMIN_API=" >> "$GITHUB_ENV"
+            exit 0
+          fi
           kubectl port-forward -n "$ECS_NAMESPACE" svc/ecs-org-issuer 3101:3000 &
           echo "ECS_PF_PID=$!" >> "$GITHUB_ENV"
           sleep 5
           curl -sf http://localhost:3101/v2/agent/health/live > /dev/null || {
-            echo "Port-forward to ecs-org-issuer failed — is it deployed in $ECS_NAMESPACE?"
+            echo "Port-forward to ecs-org-issuer failed — is it running in $ECS_NAMESPACE?"
             exit 1
           }
+          echo "ECS_ORG_ISSUER_ADMIN_API=http://localhost:3101" >> "$GITHUB_ENV"
           echo "Port-forward established"
 
       # -----------------------------------------------------------------------
@@ -331,12 +355,17 @@ jobs:
           fi
 
           # --- Complete the onboarding process --------------------------------
-          if has_completed_flow "http://localhost:3101" "$AGENT_DID" "$ECS_ORG_SCHEMA_ID"; then
+          if [ -z "${ECS_ORG_ISSUER_ADMIN_API:-}" ]; then
+            echo "::notice::Validate the onboarding of $AGENT_DID on the Organization schema ($ECS_ORG_SCHEMA_ID) from the cluster that hosts ecs-org-issuer."
+            warn "The issuer admin API is not reachable from here. Run the verana-deploy workflow"
+            warn "'Validate an ECS Organization onboarding' with environment=${NETWORK}, applicant-did=$AGENT_DID, schema-id=$ECS_ORG_SCHEMA_ID."
+            warn "The agent receives its Organization credential as soon as the issuer validates. The later steps do not wait for it."
+          elif has_completed_flow "$ECS_ORG_ISSUER_ADMIN_API" "$AGENT_DID" "$ECS_ORG_SCHEMA_ID"; then
             ok "Already validated — skipping"
           else
             # The agent composed its Organization claims from its ECS_CLAIMS_ORG_*
             # variables and sent them on the request, so this step only validates.
-            validate_pending_flow "http://localhost:3101" "$AGENT_DID" "$ECS_ORG_SCHEMA_ID"
+            validate_pending_flow "$ECS_ORG_ISSUER_ADMIN_API" "$AGENT_DID" "$ECS_ORG_SCHEMA_ID"
           fi
 
       # -----------------------------------------------------------------------

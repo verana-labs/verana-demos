@@ -41,38 +41,49 @@ set_network_vars() {
   local network="${1:-devnet}"
 
   case "$network" in
-    devnet)
-      CHAIN_ID="${CHAIN_ID:-vna-devnet-1}"
-      NODE_RPC="${NODE_RPC:-https://rpc.devnet.verana.network}"
-      # Fixed fee of each operator tx. The chain minimum is 0.0025uvna per gas,
-      # so 20000uvna covers 8M gas.
-      FEES="${FEES:-20000uvna}"
-      FAUCET_URL="https://faucet-vs.devnet.verana.network/invitation"
-      INDEXER_URL="${INDEXER_URL:-https://idx.devnet.verana.network}"
-      # The shared ECS Ecosystem VS Agent (verana-deploy/scripts/ecs-ecosystem).
-      # It defines the ECS schemas. It does NOT issue the Organization
-      # credentials — see ECS_ORG_ISSUER_* below.
-      ECS_ECOSYSTEM_DID="${ECS_ECOSYSTEM_DID:-did:webvh:QmTjgAgrSEKmXDgyzQvzar92uwQvW8VSJV8ZS5SjzYqCxX:ecs-ecosystem.devnet.verana.network}"
-      # Port-forward before use: kubectl port-forward -n vna-devnet-1 svc/ecs-ecosystem 3100:3000
-      ECS_ECOSYSTEM_ADMIN_API="${ECS_ECOSYSTEM_ADMIN_API:-http://localhost:3100}"
-      # The Verifiable Service the ECS Ecosystem corporation assigned the
-      # ISSUER Participant entry on the Organization schema. Every ECS
-      # Organization credential comes from here, over the onboarding process.
-      # Port-forward before use: kubectl port-forward -n vna-devnet-1 svc/ecs-org-issuer 3101:3000
-      ECS_ORG_ISSUER_PUBLIC_URL="${ECS_ORG_ISSUER_PUBLIC_URL:-https://ecs-org-issuer.devnet.verana.network}"
-      ECS_ORG_ISSUER_ADMIN_API="${ECS_ORG_ISSUER_ADMIN_API:-http://localhost:3101}"
-      ;;
-    testnet)
-      err "testnet is not wired up on this branch (v4/devnet only). Use NETWORK=devnet."
-      exit 1
-      ;;
+    devnet|testnet) ;;
     *)
-      err "Unknown network: $network. Use 'devnet'."
+      err "Unknown network: $network. Use 'devnet' or 'testnet'."
       exit 1
       ;;
   esac
 
-  export CHAIN_ID NODE_RPC FEES FAUCET_URL INDEXER_URL ECS_ECOSYSTEM_DID ECS_ECOSYSTEM_ADMIN_API
+  # Both networks use the same host pattern. Every value can be overridden
+  # from the environment, for example to point at a local port-forward.
+  CHAIN_ID="${CHAIN_ID:-vna-${network}-1}"
+  NODE_RPC="${NODE_RPC:-https://rpc.${network}.verana.network}"
+  # Fixed fee of each operator tx. The chain minimum is 0.0025uvna per gas,
+  # so 20000uvna covers 8M gas.
+  FEES="${FEES:-20000uvna}"
+  # The faucet API. common/faucet-fund.sh calls it with the account mnemonic.
+  FAUCET_URL="${FAUCET_URL:-https://faucet.${network}.verana.network}"
+  INDEXER_URL="${INDEXER_URL:-https://idx.${network}.verana.network}"
+
+  # The shared ECS Ecosystem VS Agent (verana-deploy/scripts/ecs-ecosystem).
+  # It defines the ECS schemas. It does NOT issue the Organization
+  # credentials — see ECS_ORG_ISSUER_* below.
+  ECS_ECOSYSTEM_PUBLIC_URL="${ECS_ECOSYSTEM_PUBLIC_URL:-https://ecs-ecosystem.${network}.verana.network}"
+  # Port-forward before use: kubectl port-forward -n vna-${network}-1 svc/ecs-ecosystem 3100:3000
+  ECS_ECOSYSTEM_ADMIN_API="${ECS_ECOSYSTEM_ADMIN_API:-http://localhost:3100}"
+  # The Verifiable Service the ECS Ecosystem corporation assigned the
+  # ISSUER Participant entry on the Organization schema. Every ECS
+  # Organization credential comes from here, over the onboarding process.
+  # Port-forward before use: kubectl port-forward -n vna-${network}-1 svc/ecs-org-issuer 3101:3000
+  ECS_ORG_ISSUER_PUBLIC_URL="${ECS_ORG_ISSUER_PUBLIC_URL:-https://ecs-org-issuer.${network}.verana.network}"
+  ECS_ORG_ISSUER_ADMIN_API="${ECS_ORG_ISSUER_ADMIN_API:-http://localhost:3101}"
+
+  # The DID of the ECS Ecosystem agent embeds a SCID that changes on every
+  # wipe of its wallet, so read it from the agent instead of pinning it here.
+  if [ -z "${ECS_ECOSYSTEM_DID:-}" ]; then
+    ECS_ECOSYSTEM_DID=$(fetch_did_from_log "$ECS_ECOSYSTEM_PUBLIC_URL" || true)
+    if [ -z "$ECS_ECOSYSTEM_DID" ]; then
+      warn "Could not read the ECS Ecosystem DID from ${ECS_ECOSYSTEM_PUBLIC_URL}/.well-known/did.jsonl"
+      warn "Every step that needs an ECS schema will fail. Is the ECS Ecosystem deployed on ${network}?"
+    fi
+  fi
+
+  export CHAIN_ID NODE_RPC FEES FAUCET_URL INDEXER_URL
+  export ECS_ECOSYSTEM_PUBLIC_URL ECS_ECOSYSTEM_DID ECS_ECOSYSTEM_ADMIN_API
   export ECS_ORG_ISSUER_PUBLIC_URL ECS_ORG_ISSUER_ADMIN_API
 }
 
@@ -145,10 +156,11 @@ check_balance() {
 
   if [ -z "$balance" ] || [ "$balance" = "0" ]; then
     err "Account '$user_acc' ($addr) has no uvna balance."
-    err "On-chain transactions require funds. Top up using the faucet:"
+    err "On-chain transactions require funds. Fund it from the faucet with the account mnemonic:"
     err ""
-    err "  ${FAUCET_URL}"
+    err "  echo \"<mnemonic>\" | ./common/faucet-fund.sh ${NETWORK:-devnet} 50000000"
     err ""
+    err "Faucet API: ${FAUCET_URL}"
     return 1
   fi
 
@@ -959,6 +971,10 @@ fetch_did_from_log() {
 find_ecs_schema_id() {
   local ecosystem_did=$1
   local title=$2
+  if [ -z "$ecosystem_did" ]; then
+    err "No ECS Ecosystem DID. set_network_vars could not read it from the ECS Ecosystem agent."
+    return 1
+  fi
 
   local ecosystem_id
   ecosystem_id=$(curl -sf "${INDEXER_URL}/v4/ecosystem/list" 2>/dev/null \

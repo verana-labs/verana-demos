@@ -34,7 +34,7 @@
 #     ORGANIZATION_VS_AGENT_MNEMONIC) — two funded devnet accounts
 #   - kubectl access to the cluster running verana-deploy's ecs-org-issuer
 #     release (for step 4) — port-forward it before running this script:
-#       kubectl port-forward -n vna-devnet-1 svc/ecs-org-issuer 3101:3000
+#       kubectl port-forward -n vna-<network>-1 svc/ecs-org-issuer 3101:3000
 #
 # Usage:
 #   source organization-vs/config.env
@@ -361,7 +361,7 @@ else
   # variables and sent them on the request, so this step only validates.
   if ! validate_pending_flow "$ECS_ORG_ISSUER_ADMIN_API" "$AGENT_DID" "$ECS_ORG_SCHEMA_ID"; then
     err "Could not validate on the Organization credential issuer ($ECS_ORG_ISSUER_ADMIN_API)."
-    err "Is it port-forwarded? kubectl port-forward -n vna-devnet-1 svc/ecs-org-issuer 3101:3000"
+    err "Is it port-forwarded? kubectl port-forward -n vna-${NETWORK}-1 svc/ecs-org-issuer 3101:3000"
     exit 1
   fi
 fi

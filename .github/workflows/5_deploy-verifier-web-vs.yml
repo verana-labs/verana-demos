@@ -29,7 +29,7 @@ jobs:
             echo "::error::Branch vs/testnet-main is reserved. Deploy from 'main' branch instead."
             exit 1
           elif [ "$BRANCH" = "main" ]; then
-            NETWORK="devnet"
+            NETWORK="testnet"
             VS_NAME="main"
           elif [[ "$BRANCH" =~ ^vs/(testnet|devnet)- ]]; then
             SUFFIX="${BRANCH#vs/}"
