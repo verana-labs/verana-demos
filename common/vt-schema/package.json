@@ -1,0 +1,17 @@
+{
+  "name": "@verana-demos/vt-schema",
+  "version": "1.0.0",
+  "description": "Shared Verifiable Trust schema discovery for the demo applications (Verana v4)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "files": [
+    "dist"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.6.0"
+  }
+}

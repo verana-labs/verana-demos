@@ -17,18 +17,14 @@ async function main(): Promise<void> {
   // Wait for VS-Agent to be ready
   const client = new VsAgentClient(config);
   const agent = await client.waitForReady();
-  console.log(`VS-Agent ready — DID: ${agent.publicDid}`);
+  console.log(`VS-Agent ready — DID: ${agent.did}`);
 
   // Discover schema from organization-vs (schema owner)
-  const orgPublicUrl = config.orgVsPublicUrl || undefined;
-  const orgClient = orgPublicUrl
-    ? undefined
-    : new VsAgentClient({ ...config, vsAgentAdminUrl: config.orgVsAdminUrl });
   const schema = await discoverSchema(
     client,
     config.customSchemaBaseId,
-    orgPublicUrl,
-    orgClient
+    config.orgVsPublicUrl || undefined,
+    config.orgVsLocalPublicUrl || undefined
   );
 
   // Initialize in-memory session store
@@ -42,10 +38,8 @@ async function main(): Promise<void> {
   app.listen(config.issuerPort, () => {
     console.log(`Issuer Web listening on port ${config.issuerPort}`);
     console.log(`  Open http://localhost:${config.issuerPort} in your browser`);
-    console.log(`Webhook endpoint:`);
-    console.log(
-      `  POST http://localhost:${config.issuerPort}/webhooks/message-received`
-    );
+    console.log(`Events endpoint:`);
+    console.log(`  POST http://localhost:${config.issuerPort}/events`);
   });
 
   // Graceful shutdown

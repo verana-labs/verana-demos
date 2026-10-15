@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # =============================================================================
-# common.sh — Shared helpers for VS Demo scripts
+# common.sh — Shared helpers for VS Demo scripts (Verana v0.10.1+)
 # =============================================================================
 #
-# Source this file from the VS Demo scripts (01-deploy-vs.sh,
-# 02-get-ecs-credentials.sh, 03-create-trust-registry.sh).
-# It provides:
+# Source this file from the VS Demo scripts. It provides:
 #   - Colored logging functions
 #   - Transaction helpers (extract_tx_event, extract_tx_json, submit_tx)
-#   - VS Agent API helpers (wait_for_agent, cleanup_all_vtjscs, cleanup_ecs_credentials)
+#   - VS Agent API helpers (wait_for_agent)
 #   - Network configuration (set_network_vars)
-#   - ECS discovery helpers (discover_ecs_vtjsc, discover_active_root_perm)
-#   - Credential helpers (issue_and_link, issue_remote_and_link)
-#   - Permission helpers (find_active_issuer_perm)
-#   - Trust Registry duplicate detection (has_trust_registry_for_schema)
+#   - Corporation / Ecosystem / Participant helpers (co/ec/cs/pp modules)
+#   - vt-flow validator helper (validate_pending_flow)
 #   - Schema download / logo helpers
+#   - AnonCreds VTJSC discovery
+#
+# CLI syntax verified directly against a live veranad v0.10.2 binary and
+# the v0.10.1 verana-node source — see verana-deploy/scripts/ecs-ecosystem/common.sh
+# and docs/14-ecs-ecosystem.md for how each one was confirmed.
 #
 # =============================================================================
 
@@ -24,7 +25,12 @@
 
 log()  { echo -e "\n\033[1;34m▶ $1\033[0m" >&2; }
 ok()   { echo -e "  \033[1;32m✔ $1\033[0m" >&2; }
-err()  { echo -e "  \033[1;31m✘ $1\033[0m" >&2; }
+err()  {
+  echo -e "  \033[1;31m✘ $1\033[0m" >&2
+  # `set -e` aborts the step right after most err calls, and the last stderr
+  # lines can lose the race with the runner log. An annotation always survives.
+  [ -n "${GITHUB_ACTIONS:-}" ] && echo "::error::$1" || true
+}
 warn() { echo -e "  \033[1;33m⚠ $1\033[0m" >&2; }
 
 # ---------------------------------------------------------------------------
@@ -32,37 +38,87 @@ warn() { echo -e "  \033[1;33m⚠ $1\033[0m" >&2; }
 # ---------------------------------------------------------------------------
 
 set_network_vars() {
-  local network="${1:-testnet}"
+  local network="${1:-devnet}"
 
   case "$network" in
-    devnet)
-      CHAIN_ID="${CHAIN_ID:-vna-devnet-1}"
-      NODE_RPC="${NODE_RPC:-https://rpc.devnet.verana.network}"
-      FEES="${FEES:-600000uvna}"
-      FAUCET_URL="https://faucet-vs.devnet.verana.network/invitation"
-      RESOLVER_URL="${RESOLVER_URL:-https://resolver.devnet.verana.network}"
-      ECS_TR_ADMIN_API="${ECS_TR_ADMIN_API:-https://admin-ecs-trust-registry.devnet.verana.network}"
-      ECS_TR_PUBLIC_URL="${ECS_TR_PUBLIC_URL:-https://ecs-trust-registry.devnet.verana.network}"
-      INDEXER_URL="${INDEXER_URL:-https://idx.devnet.verana.network}"
-      ;;
-    testnet)
-      CHAIN_ID="${CHAIN_ID:-vna-testnet-1}"
-      NODE_RPC="${NODE_RPC:-https://rpc.testnet.verana.network}"
-      FEES="${FEES:-600000uvna}"
-      FAUCET_URL="https://faucet-vs.testnet.verana.network/invitation"
-      RESOLVER_URL="${RESOLVER_URL:-https://resolver.testnet.verana.network}"
-      ECS_TR_ADMIN_API="${ECS_TR_ADMIN_API:-https://admin-ecs-trust-registry.testnet.verana.network}"
-      ECS_TR_PUBLIC_URL="${ECS_TR_PUBLIC_URL:-https://ecs-trust-registry.testnet.verana.network}"
-      INDEXER_URL="${INDEXER_URL:-https://idx.testnet.verana.network}"
-      ;;
+    devnet|testnet) ;;
     *)
       err "Unknown network: $network. Use 'devnet' or 'testnet'."
       exit 1
       ;;
   esac
 
-  export CHAIN_ID NODE_RPC FEES FAUCET_URL RESOLVER_URL ECS_TR_ADMIN_API ECS_TR_PUBLIC_URL INDEXER_URL
+  # Both networks use the same host pattern. Every value can be overridden
+  # from the environment, for example to point at a local port-forward.
+  CHAIN_ID="${CHAIN_ID:-vna-${network}-1}"
+  NODE_RPC="${NODE_RPC:-https://rpc.${network}.verana.network}"
+  # Fixed fee of each operator tx. The chain minimum is 0.0025uvna per gas,
+  # so 20000uvna covers 8M gas.
+  FEES="${FEES:-20000uvna}"
+  # The faucet API. common/faucet-fund.sh calls it with the account mnemonic.
+  FAUCET_URL="${FAUCET_URL:-https://faucet.${network}.verana.network}"
+  INDEXER_URL="${INDEXER_URL:-https://idx.${network}.verana.network}"
+
+  # The shared ECS Ecosystem VS Agent (verana-deploy/scripts/ecs-ecosystem).
+  # It defines the ECS schemas. It does NOT issue the Organization
+  # credentials — see ECS_ORG_ISSUER_* below.
+  ECS_ECOSYSTEM_PUBLIC_URL="${ECS_ECOSYSTEM_PUBLIC_URL:-https://ecs-ecosystem.${network}.verana.network}"
+  # Port-forward before use: kubectl port-forward -n vna-${network}-1 svc/ecs-ecosystem 3100:3000
+  ECS_ECOSYSTEM_ADMIN_API="${ECS_ECOSYSTEM_ADMIN_API:-http://localhost:3100}"
+  # The Verifiable Service the ECS Ecosystem corporation assigned the
+  # ISSUER Participant entry on the Organization schema. Every ECS
+  # Organization credential comes from here, over the onboarding process.
+  # Port-forward before use: kubectl port-forward -n vna-${network}-1 svc/ecs-org-issuer 3101:3000
+  ECS_ORG_ISSUER_PUBLIC_URL="${ECS_ORG_ISSUER_PUBLIC_URL:-https://ecs-org-issuer.${network}.verana.network}"
+  ECS_ORG_ISSUER_ADMIN_API="${ECS_ORG_ISSUER_ADMIN_API:-http://localhost:3101}"
+
+  # The DID of the ECS Ecosystem agent embeds a SCID that changes on every
+  # wipe of its wallet, so read it from the agent instead of pinning it here.
+  if [ -z "${ECS_ECOSYSTEM_DID:-}" ]; then
+    ECS_ECOSYSTEM_DID=$(fetch_did_from_log "$ECS_ECOSYSTEM_PUBLIC_URL" || true)
+    if [ -z "$ECS_ECOSYSTEM_DID" ]; then
+      warn "Could not read the ECS Ecosystem DID from ${ECS_ECOSYSTEM_PUBLIC_URL}/.well-known/did.jsonl"
+      warn "Every step that needs an ECS schema will fail. Is the ECS Ecosystem deployed on ${network}?"
+    fi
+  fi
+
+  export CHAIN_ID NODE_RPC FEES FAUCET_URL INDEXER_URL
+  export ECS_ECOSYSTEM_PUBLIC_URL ECS_ECOSYSTEM_DID ECS_ECOSYSTEM_ADMIN_API
+  export ECS_ORG_ISSUER_PUBLIC_URL ECS_ORG_ISSUER_ADMIN_API
 }
+
+# ---------------------------------------------------------------------------
+# VSOperatorAuthorization message types, per participant role
+# ---------------------------------------------------------------------------
+# A VS Agent uses exactly ONE Verana account, and that account is the
+# vs_operator of the participants this script assigns to it. The chain accepts
+# only these msg types per role, and rejects any other value at creation time
+# (vsoaPermittedMsgTypes, verana-node x/pp/types/types.go). The Corporation
+# operator account, which runs these scripts, holds the OperatorAuthorization
+# instead; one account can never hold both.
+readonly VSOA_ISSUER="/verana.pp.v1.MsgCreateOrUpdateParticipantSession,/verana.pp.v1.MsgSetParticipantOPToValidated"
+readonly VSOA_VERIFIER="/verana.pp.v1.MsgCreateOrUpdateParticipantSession"
+readonly VSOA_HOLDER="/verana.pp.v1.MsgTriggerResolver"
+
+# ---------------------------------------------------------------------------
+# OperatorAuthorization message types, per service role
+# ---------------------------------------------------------------------------
+# The blanket grant the Corporation gives its operator account. Keep each list
+# to what the role actually sends. A Corporation created for a narrow role must
+# widen its grant before it takes on a wider one — the chain checks each message
+# type separately, so a missing entry surfaces much later, at the first
+# transaction that needs it. Use ensure_operator_authorization for that.
+#
+# MsgCreateOrUpdateParticipantSession is deliberately absent: the chain refuses
+# it in a blanket grant, and delegates it per participant through the VSOA.
+readonly OA_MSGS_ECOSYSTEM='["/verana.ec.v1.MsgCreateEcosystem","/verana.ec.v1.MsgUpdateEcosystem","/verana.ec.v1.MsgArchiveEcosystem","/verana.cs.v1.MsgCreateCredentialSchema","/verana.pp.v1.MsgCreateRootParticipant","/verana.pp.v1.MsgStartParticipantOP","/verana.pp.v1.MsgSetParticipantOPToValidated","/verana.pp.v1.MsgRenewParticipantOP","/verana.pp.v1.MsgCancelParticipantOPLastRequest","/verana.pp.v1.MsgSelfCreateParticipant","/verana.pp.v1.MsgRevokeParticipant","/verana.pp.v1.MsgTriggerResolver"]'
+
+# Used only by the local <service>/scripts/setup.sh path, which still gives each demo service
+# its own Corporation. The GitHub workflows no longer do that: a service joins organization-vs's
+# Corporation, because the DID ownership invariant binds a DID to one Corporation and lets one
+# Corporation own many DIDs. Port the local scripts the same way, then delete these.
+readonly OA_MSGS_ISSUER='["/verana.pp.v1.MsgStartParticipantOP","/verana.pp.v1.MsgRenewParticipantOP","/verana.pp.v1.MsgCancelParticipantOPLastRequest","/verana.pp.v1.MsgTriggerResolver"]'
+readonly OA_MSGS_VERIFIER='["/verana.pp.v1.MsgSelfCreateParticipant","/verana.pp.v1.MsgStartParticipantOP","/verana.pp.v1.MsgRenewParticipantOP","/verana.pp.v1.MsgCancelParticipantOPLastRequest","/verana.pp.v1.MsgTriggerResolver"]'
 
 # ---------------------------------------------------------------------------
 # Transaction helpers
@@ -85,7 +141,6 @@ extract_tx_json() {
 
 # Check that the veranad account has sufficient balance for on-chain transactions.
 # Usage: check_balance <user_acc>
-# Exits with error and faucet URL if balance is zero.
 check_balance() {
   local user_acc=$1
   local addr
@@ -101,10 +156,11 @@ check_balance() {
 
   if [ -z "$balance" ] || [ "$balance" = "0" ]; then
     err "Account '$user_acc' ($addr) has no uvna balance."
-    err "On-chain transactions require funds. Top up using the faucet:"
+    err "On-chain transactions require funds. Fund it from the faucet with the account mnemonic:"
     err ""
-    err "  ${FAUCET_URL}"
+    err "  echo \"<mnemonic>\" | ./common/faucet-fund.sh ${NETWORK:-devnet} 50000000"
     err ""
+    err "Faucet API: ${FAUCET_URL}"
     return 1
   fi
 
@@ -121,7 +177,7 @@ submit_tx() {
   local raw_output
   raw_output=$("$@" \
     --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
-    --fees "$FEES" --gas auto --node "$NODE_RPC" \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
     --output json -y 2>&1) || true
 
   local result
@@ -152,6 +208,80 @@ submit_tx() {
   echo "$value"
 }
 
+# Submit a message as a group proposal, vote YES with auto-execute, and return
+# the proposal execution TX hash. Used for operations that require the
+# Corporation's group policy account itself as the signer (e.g. granting
+# operator authorization before the operator has any grant of its own).
+# Usage: exec_group_proposal <corporation_policy_address> "<description>" '<message_json>'
+exec_group_proposal() {
+  local corporation=$1
+  local description=$2
+  local message_json=$3
+
+  local tmpfile
+  tmpfile=$(mktemp /tmp/group_proposal_XXXXXX.json)
+
+  cat > "$tmpfile" << PROPEOF
+{
+  "group_policy_address": "$corporation",
+  "proposers": ["$USER_ACC_ADDR"],
+  "metadata": "$description",
+  "messages": [ $message_json ],
+  "title": "$description",
+  "summary": "$description"
+}
+PROPEOF
+
+  local prop_raw
+  prop_raw=$(veranad tx group submit-proposal "$tmpfile" \
+    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
+    --output json -y 2>&1) || true
+  echo "$prop_raw" >&2
+  rm -f "$tmpfile"
+
+  local prop_result
+  prop_result=$(echo "$prop_raw" | extract_tx_json)
+  local prop_tx
+  prop_tx=$(echo "$prop_result" | jq -r '.txhash // empty')
+  if [ -z "$prop_tx" ]; then
+    err "Failed to submit group proposal. Raw output: $prop_raw"
+    return 1
+  fi
+
+  sleep 6
+
+  local prop_id
+  prop_id=$(veranad q tx "$prop_tx" --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -r '.events[] | select(.type == "cosmos.group.v1.EventSubmitProposal") | .attributes[] | select(.key == "proposal_id") | .value' \
+    | tr -d '"' | head -1)
+  if [ -z "$prop_id" ]; then
+    err "Could not extract proposal ID"
+    return 1
+  fi
+
+  local vote_raw
+  vote_raw=$(veranad tx group vote \
+    "$prop_id" "$USER_ACC_ADDR" VOTE_OPTION_YES "" \
+    --exec 1 \
+    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
+    --output json -y 2>&1) || true
+  echo "$vote_raw" >&2
+
+  local vote_result
+  vote_result=$(echo "$vote_raw" | extract_tx_json)
+  local vote_tx
+  vote_tx=$(echo "$vote_result" | jq -r '.txhash // empty')
+  if [ -z "$vote_tx" ]; then
+    err "Failed to vote on proposal $prop_id. Raw output: $vote_raw"
+    return 1
+  fi
+
+  sleep 6
+  echo "$vote_tx"
+}
+
 # ---------------------------------------------------------------------------
 # VS Agent API helpers
 # ---------------------------------------------------------------------------
@@ -163,66 +293,13 @@ wait_for_agent() {
   local max_retries=${2:-30}
   local i=0
   while [ $i -lt "$max_retries" ]; do
-    if curl -sf "${admin_api}/v1/agent" > /dev/null 2>&1; then
+    if curl -sf "${admin_api}/v2/agent/health/ready" > /dev/null 2>&1; then
       return 0
     fi
     sleep 2
     i=$((i + 1))
   done
   return 1
-}
-
-# Remove ALL local VTJSCs and their linked credentials (both self-generated and VPR-linked)
-# Usage: cleanup_all_vtjscs <admin_api_url>
-cleanup_all_vtjscs() {
-  local admin_api=$1
-
-  local all_jscs
-  all_jscs=$(curl -sf "${admin_api}/v1/vt/json-schema-credentials" \
-    | jq -r '.data[].credential.id' 2>/dev/null)
-
-  for jsc_id in $all_jscs; do
-    curl -s -X DELETE "${admin_api}/v1/vt/linked-credentials" \
-      -H 'Content-Type: application/json' \
-      -d "{\"credentialSchemaId\": \"$jsc_id\"}" > /dev/null 2>&1 || true
-    curl -s -X DELETE "${admin_api}/v1/vt/json-schema-credentials" \
-      -H 'Content-Type: application/json' \
-      -d "{\"id\": \"$jsc_id\"}" > /dev/null 2>&1 || true
-  done
-}
-
-# Remove ECS-linked credentials (Organization + Service) and their VTJSCs
-# Call this before re-issuing ECS credentials so old linked VPs are removed.
-# Usage: cleanup_ecs_credentials <admin_api_url> <org_jsc_url> <service_jsc_url>
-cleanup_ecs_credentials() {
-  local admin_api=$1
-  local org_jsc_url=$2
-  local service_jsc_url=$3
-
-  log "Cleaning up previous ECS credentials..."
-  for jsc_url in "$org_jsc_url" "$service_jsc_url"; do
-    # Delete the linked VP
-    curl -s -X DELETE "${admin_api}/v1/vt/linked-credentials" \
-      -H 'Content-Type: application/json' \
-      -d "{\"credentialSchemaId\": \"$jsc_url\"}" > /dev/null 2>&1 || true
-    # Delete any locally-cached VTJSC
-    curl -s -X DELETE "${admin_api}/v1/vt/json-schema-credentials" \
-      -H 'Content-Type: application/json' \
-      -d "{\"id\": \"$jsc_url\"}" > /dev/null 2>&1 || true
-  done
-  # Also remove non-VPR self-generated VTJSCs from agent init
-  local self_jscs
-  self_jscs=$(curl -sf "${admin_api}/v1/vt/json-schema-credentials" \
-    | jq -r '.data[] | select(.schemaId | startswith("vpr:") | not) | .credential.id' 2>/dev/null)
-  for jsc_id in $self_jscs; do
-    curl -s -X DELETE "${admin_api}/v1/vt/linked-credentials" \
-      -H 'Content-Type: application/json' \
-      -d "{\"credentialSchemaId\": \"$jsc_id\"}" > /dev/null 2>&1 || true
-    curl -s -X DELETE "${admin_api}/v1/vt/json-schema-credentials" \
-      -H 'Content-Type: application/json' \
-      -d "{\"id\": \"$jsc_id\"}" > /dev/null 2>&1 || true
-  done
-  ok "Previous ECS credentials cleaned up"
 }
 
 # ---------------------------------------------------------------------------
@@ -248,381 +325,24 @@ compute_sri_digest() {
   echo "sha384-${hash}"
 }
 
-# Download an image from a URL and return it as a data URI.
-# The ECS schema requires logo/avatar fields as data URIs: data:<type>;base64,<data>
-# Usage: download_logo_data_uri <url>
-# Returns: data:<content-type>;base64,<base64-encoded-data>
-download_logo_data_uri() {
-  local url=$1
-  local tmp_body="/tmp/logo_body_$$"
-  local tmp_headers="/tmp/logo_headers_$$"
-
-  # Download image and capture response headers
-  local http_code
-  http_code=$(curl -sfL -D "$tmp_headers" -o "$tmp_body" -w '%{http_code}' "$url")
-
-  if [ "$http_code" != "200" ] || [ ! -s "$tmp_body" ]; then
-    err "Failed to download logo from $url (HTTP $http_code)"
-    rm -f "$tmp_body" "$tmp_headers"
-    return 1
-  fi
-
-  # Extract content type from response headers
-  local content_type
-  content_type=$(grep -i '^content-type:' "$tmp_headers" | tail -1 | tr -d '\r' | sed 's/^[^:]*:[[:space:]]*//' | cut -d';' -f1 | xargs)
-
-  # Fallback: detect from URL extension if content type is missing or generic
-  case "$content_type" in
-    image/png|image/jpeg|image/svg+xml) ;;
-    *)
-      case "$url" in
-        *.png)          content_type="image/png" ;;
-        *.jpg|*.jpeg)   content_type="image/jpeg" ;;
-        *.svg)          content_type="image/svg+xml" ;;
-        *)
-          err "Could not determine image content type for $url (got: ${content_type:-empty})"
-          rm -f "$tmp_body" "$tmp_headers"
-          return 1
-          ;;
-      esac
-      warn "Content-Type header not image/*; using $content_type (from URL extension)"
-      ;;
-  esac
-
-  # Base64-encode and construct data URI
-  local b64
-  b64=$(base64 < "$tmp_body" | tr -d '\n')
-  rm -f "$tmp_body" "$tmp_headers"
-
-  if [ -z "$b64" ]; then
-    err "Failed to base64-encode logo from $url"
-    return 1
-  fi
-
-  echo "data:${content_type};base64,${b64}"
-}
-
-# ---------------------------------------------------------------------------
-# ECS Trust Registry discovery helpers
-# ---------------------------------------------------------------------------
-
-# Discover a VTJSC from the ECS Trust Registry by resolving its DID document.
-# Finds the LinkedVerifiablePresentation service entry matching "<schema_name>-jsc-vp",
-# fetches the VP, and extracts the VTJSC credential URL and VPR schema ID.
-#
-# Usage: discover_ecs_vtjsc <ecs_public_url> <schema_name>
-# Example: discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service"
-# Outputs two lines to stdout:
-#   line 1: VTJSC credential URL (jsonSchemaCredentialId for issue-credential)
-#   line 2: numeric VPR schema ID
-discover_ecs_vtjsc() {
-  local ecs_public_url=$1
-  local schema_name=$2
-
-  log "Resolving ECS TR DID document for '$schema_name' VTJSC..."
-
-  # Fetch the DID document from the ECS TR's public URL
-  local did_doc
-  did_doc=$(curl -sf "${ecs_public_url}/.well-known/did.json")
-  if [ -z "$did_doc" ]; then
-    err "Failed to fetch DID document from ${ecs_public_url}/.well-known/did.json"
-    return 1
-  fi
-
-  # Find the JSC-VP LinkedVerifiablePresentation service entry
-  local vp_url
-  vp_url=$(echo "$did_doc" | jq -r --arg pat "${schema_name}-jsc-vp" '
-    .service[] | select(.type == "LinkedVerifiablePresentation") |
-    select(.id | test($pat)) | .serviceEndpoint' | head -1)
-
-  if [ -z "$vp_url" ]; then
-    err "No LinkedVerifiablePresentation matching '${schema_name}-jsc-vp' in DID document"
-    return 1
-  fi
-  ok "VTJSC VP endpoint: $vp_url"
-
-  # Fetch the VP and extract the VTJSC credential
-  local vp
-  vp=$(curl -sf "$vp_url")
-  if [ -z "$vp" ]; then
-    err "Failed to fetch VTJSC VP from $vp_url"
-    return 1
-  fi
-
-  # Extract VTJSC credential URL (verifiableCredential[0].id)
-  local vtjsc_url
-  vtjsc_url=$(echo "$vp" | jq -r '.verifiableCredential[0].id // empty')
-  if [ -z "$vtjsc_url" ]; then
-    err "Could not extract VTJSC URL from VP"
-    return 1
-  fi
-
-  # Extract VPR schema ref from credentialSubject.jsonSchema.$ref
-  # e.g. "vpr:verana:vna-testnet-1/cs/v1/js/110"
-  local schema_ref
-  schema_ref=$(echo "$vp" | jq -r '.verifiableCredential[0].credentialSubject.jsonSchema."$ref" // empty')
-  if [ -z "$schema_ref" ]; then
-    err "Could not extract jsonSchema.\$ref from VTJSC"
-    return 1
-  fi
-
-  # Extract numeric schema ID from the end of the VPR ref
-  local schema_id
-  schema_id=$(echo "$schema_ref" | grep -oE '[0-9]+$')
-  if [ -z "$schema_id" ]; then
-    err "Could not parse schema ID from ref: $schema_ref"
-    return 1
-  fi
-
-  ok "VTJSC '$schema_name' → URL: $vtjsc_url, schema ID: $schema_id"
-  echo "$vtjsc_url"
-  echo "$schema_id"
-}
-
-# Discover the active root permission (ECOSYSTEM type) for a given schema
-# using the Verana Indexer API.
-# Usage: discover_active_root_perm <schema_id>
-# Returns: the root permission ID on stdout
-discover_active_root_perm() {
-  local schema_id=$1
-  local url="${INDEXER_URL}/verana/perm/v1/list?schema_id=${schema_id}"
-
-  log "Discovering active root permission for schema $schema_id via indexer..."
-  log "Indexer URL: $url"
-
-  local perms http_code
-  local max_retries=3
-  local attempt=0
-
-  while [ $attempt -lt $max_retries ]; do
-    attempt=$((attempt + 1))
-    http_code=$(curl -s -o /tmp/indexer_response.json -w '%{http_code}' "$url")
-    if [ "$http_code" = "200" ]; then
-      perms=$(cat /tmp/indexer_response.json)
-      break
-    fi
-    log "Indexer request attempt $attempt/$max_retries returned HTTP $http_code, retrying in 5s..."
-    sleep 5
-  done
-
-  if [ "$http_code" != "200" ] || [ -z "$perms" ]; then
-    err "Failed to query indexer (HTTP $http_code) at $url"
-    [ -f /tmp/indexer_response.json ] && err "Response: $(cat /tmp/indexer_response.json)"
-    return 1
-  fi
-
-  # Find an active ECOSYSTEM (root) permission
-  local root_perm_id
-  root_perm_id=$(echo "$perms" | jq -r '
-    .permissions[] |
-    select(.type == "ECOSYSTEM" and .perm_state == "ACTIVE") |
-    .id' | head -1)
-
-  if [ -z "$root_perm_id" ]; then
-    err "No active ECOSYSTEM permission found for schema $schema_id"
-    err "Permissions returned: $(echo "$perms" | jq -c '.permissions | length') entries"
-    return 1
-  fi
-
-  ok "Active root permission: $root_perm_id"
-  echo "$root_perm_id"
-}
-
-# ---------------------------------------------------------------------------
-# Credential helpers
-# ---------------------------------------------------------------------------
-
-# Issue a credential via the VS Agent admin API and link it as a VP
-# Usage: issue_and_link <admin_api> <schema_base_id> <chain_id> <schema_id> <agent_did> <claims_json>
-issue_and_link() {
-  local admin_api=$1
-  local schema_base_id=$2
-  local chain_id=$3
-  local schema_id=$4
-  local agent_did=$5
-  local claims_json=$6
-
-  # Get the VTJSC URL for this schema
-  local vpr_ref="vpr:verana:${chain_id}/cs/v1/js/${schema_id}"
-  log "Looking up VTJSC for schema $schema_id (ref: $vpr_ref)..."
-
-  local jsc_list_code jsc_list
-  jsc_list_code=$(curl -s -o /tmp/jsc_list.json -w '%{http_code}' "${admin_api}/v1/vt/json-schema-credentials")
-  jsc_list=$(cat /tmp/jsc_list.json)
-
-  if [ "$jsc_list_code" != "200" ]; then
-    err "Failed to list VTJSCs (HTTP $jsc_list_code). Response: $jsc_list"
-    return 1
-  fi
-
-  local jsc_url
-  jsc_url=$(echo "$jsc_list" | jq -r --arg sid "$vpr_ref" '.data[] | select(.schemaId == $sid) | .credential.id')
-  if [ -z "$jsc_url" ]; then
-    err "VTJSC not found for schema $schema_id (ref: $vpr_ref)"
-    err "Available schemas: $(echo "$jsc_list" | jq -c '[.data[].schemaId]')"
-    return 1
-  fi
-  ok "VTJSC URL: $jsc_url"
-
-  # Issue the credential
-  local request_body
-  request_body=$(jq -n \
-    --arg fmt "jsonld" \
-    --arg did "$agent_did" \
-    --arg jsc "$jsc_url" \
-    --argjson claims "$claims_json" \
-    '{format: $fmt, did: $did, jsonSchemaCredentialId: $jsc, claims: $claims}')
-
-  local issue_url="${admin_api}/v1/vt/issue-credential"
-  log "Issuing credential via $issue_url"
-
-  local issue_code credential
-  issue_code=$(curl -s -o /tmp/issue_self.json -w '%{http_code}' \
-    -X POST "$issue_url" \
-    -H 'Content-Type: application/json' \
-    -d "$request_body")
-  credential=$(cat /tmp/issue_self.json)
-
-  if [ "$issue_code" != "200" ] && [ "$issue_code" != "201" ]; then
-    err "Failed to issue credential (HTTP $issue_code). Response: $credential"
-    return 1
-  fi
-  ok "Credential issued (HTTP $issue_code)"
-
-  # Extract signed credential
-  local signed_cred
-  signed_cred=$(echo "$credential" | jq '.credential')
-  if [ "$signed_cred" = "null" ] || [ -z "$signed_cred" ]; then
-    signed_cred="$credential"
-  fi
-
-  # Link as VP (delete any previous linked credential for this VTJSC first)
-  local link_url="${admin_api}/v1/vt/linked-credentials"
-  curl -s -X DELETE "${link_url}" \
-    -H 'Content-Type: application/json' \
-    -d "{\"credentialSchemaId\": \"$jsc_url\"}" > /dev/null 2>&1 || true
-  log "Linking credential on agent: $link_url"
-
-  local link_body
-  link_body=$(jq -n \
-    --arg sbi "$schema_base_id" \
-    --argjson cred "$signed_cred" \
-    '{schemaBaseId: $sbi, credential: $cred}')
-
-  local link_code link_result
-  link_code=$(curl -s -o /tmp/link_self.json -w '%{http_code}' \
-    -X POST "$link_url" \
-    -H 'Content-Type: application/json' \
-    -d "$link_body")
-  link_result=$(cat /tmp/link_self.json)
-
-  if [ "$link_code" != "200" ] && [ "$link_code" != "201" ]; then
-    err "Failed to link credential (HTTP $link_code). Response: $link_result"
-    return 1
-  fi
-  ok "Credential linked as VP (schemaBaseId: $schema_base_id)"
-}
-
-# Issue a credential from a REMOTE admin API (e.g., ECS TR) and link it on the LOCAL agent
-# Usage: issue_remote_and_link <remote_admin_api> <local_admin_api> <schema_base_id> <jsc_url> <target_did> <claims_json>
-issue_remote_and_link() {
-  local remote_api=$1
-  local local_api=$2
-  local schema_base_id=$3
-  local jsc_url=$4
-  local target_did=$5
-  local claims_json=$6
-
-  local request_body
-  request_body=$(jq -n \
-    --arg fmt "jsonld" \
-    --arg did "$target_did" \
-    --arg jsc "$jsc_url" \
-    --argjson claims "$claims_json" \
-    '{format: $fmt, did: $did, jsonSchemaCredentialId: $jsc, claims: $claims}')
-
-  # Issue via remote API
-  local issue_url="${remote_api}/v1/vt/issue-credential"
-  log "Requesting credential from remote API: $issue_url"
-  log "Request body: $(echo "$request_body" | jq -c '.')"
-
-  local http_code credential
-  http_code=$(curl -s -o /tmp/issue_response.json -w '%{http_code}' \
-    -X POST "$issue_url" \
-    -H 'Content-Type: application/json' \
-    -d "$request_body")
-  credential=$(cat /tmp/issue_response.json)
-
-  if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
-    err "Remote API returned HTTP $http_code"
-    err "Response: $credential"
-    return 1
-  fi
-
-  if [ -z "$credential" ] || echo "$credential" | jq -e '.statusCode' > /dev/null 2>&1; then
-    err "Remote API failed to issue credential. Response: $credential"
-    return 1
-  fi
-  ok "Credential received from remote API (HTTP $http_code)"
-
-  # Extract signed credential
-  local signed_cred
-  signed_cred=$(echo "$credential" | jq '.credential')
-  if [ "$signed_cred" = "null" ] || [ -z "$signed_cred" ]; then
-    signed_cred="$credential"
-  fi
-
-  # Link on local agent (delete any previous linked credential for this VTJSC first)
-  local link_url="${local_api}/v1/vt/linked-credentials"
-  curl -s -X DELETE "${link_url}" \
-    -H 'Content-Type: application/json' \
-    -d "{\"credentialSchemaId\": \"$jsc_url\"}" > /dev/null 2>&1 || true
-  log "Linking credential on local agent: $link_url"
-
-  local link_body
-  link_body=$(jq -n \
-    --arg sbi "$schema_base_id" \
-    --argjson cred "$signed_cred" \
-    '{schemaBaseId: $sbi, credential: $cred}')
-
-  local link_code link_result
-  link_code=$(curl -s -o /tmp/link_response.json -w '%{http_code}' \
-    -X POST "$link_url" \
-    -H 'Content-Type: application/json' \
-    -d "$link_body")
-  link_result=$(cat /tmp/link_response.json)
-
-  if [ "$link_code" != "200" ] && [ "$link_code" != "201" ]; then
-    err "Failed to link credential (HTTP $link_code). Response: $link_result"
-    return 1
-  fi
-  ok "Credential linked as VP on local agent (schemaBaseId: $schema_base_id)"
-}
-
-# Check if a LinkedVerifiablePresentation already exists in the agent's public DID document
-# Usage: has_linked_vp <public_url> <schema_base_id>
-# Returns 0 (true) if a matching VP exists, 1 (false) otherwise
-has_linked_vp() {
-  local public_url=$1
-  local schema_base_id=$2
-
-  local did_doc
-  did_doc=$(curl -sf "${public_url}/.well-known/did.json" 2>/dev/null) || return 1
-
-  local match
-  match=$(echo "$did_doc" | jq -r \
-    --arg sbi "$schema_base_id" \
-    '.service[] |
-     select(.type == "LinkedVerifiablePresentation") |
-     select(.id | test($sbi + "-jsc-vp")) |
-     .id' 2>/dev/null | head -1)
-
-  [ -n "$match" ]
-}
-
 # ---------------------------------------------------------------------------
 # CLI setup helpers
 # ---------------------------------------------------------------------------
+
+# Derive USER_ACC_ADDR from the keyring when the caller has not set it. The
+# interactive setup_veranad_account sets it, but CI imports the key directly and
+# never calls that helper. An empty value reaches the chain as an empty member
+# address, which fails with "members[0].address is required".
+require_user_acc_addr() {
+  if [ -z "${USER_ACC_ADDR:-}" ]; then
+    USER_ACC_ADDR=$(veranad keys show "$USER_ACC" -a --keyring-backend test 2>/dev/null) || true
+    export USER_ACC_ADDR
+  fi
+  if [ -z "${USER_ACC_ADDR:-}" ]; then
+    err "Could not derive an address for '$USER_ACC'. Is the key in the keyring?"
+    return 1
+  fi
+}
 
 # Ensure veranad account exists and is funded
 # Usage: setup_veranad_account <user_acc> <faucet_url>
@@ -670,122 +390,809 @@ setup_veranad_account() {
 }
 
 # ---------------------------------------------------------------------------
-# Permission helpers
+# Corporation helpers (verana.co.v1 / verana.de.v1)
 # ---------------------------------------------------------------------------
 
-# Check if a DID already has an active permission of a given type for a schema.
-# Returns 0 (true) if an active permission exists; 1 (false) otherwise.
-# On success, prints the permission ID to stdout.
-# Usage: find_active_perm <schema_id> <perm_type> <did>
-#   perm_type: ISSUER | VERIFIER
-find_active_perm() {
-  local schema_id=$1
-  local perm_type=$2
-  local did=$3
-  local url="${INDEXER_URL}/verana/perm/v1/list?schema_id=${schema_id}"
+# Create a Corporation and grant its operator (USER_ACC_ADDR) a blanket
+# OperatorAuthorization covering the given msg types. Sets CORPORATION_ID and
+# CORPORATION (policy address) on success.
+# Usage: create_corporation <did> [doc_url] [doc_digest_sri] [msg_types_json_array]
+create_corporation() {
+  require_user_acc_addr || return 1
+  local did=$1
+  local doc_url="${2:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
+  local doc_digest="${3:-}"
+  # The callers that take the default pass three arguments, and every script
+  # runs under `set -u`, so this must tolerate an absent fourth.
+  local msg_types="${4:-}"
+  if [ -z "$msg_types" ]; then
+    msg_types="$OA_MSGS_ECOSYSTEM"
+  fi
 
-  local perms http_code
-  http_code=$(curl -s -o /tmp/perm_check.json -w '%{http_code}' "$url")
-  if [ "$http_code" != "200" ]; then
+  if [ -z "$doc_digest" ]; then
+    doc_digest=$(compute_sri_digest "$doc_url")
+  fi
+
+  log "Creating Corporation (did: $did)..."
+  check_balance "$USER_ACC"
+
+  local members_json="{\"address\":\"${USER_ACC_ADDR}\",\"weight\":\"1\",\"metadata\":\"demo corporation\"}"
+  local decision_policy_json='{"@type":"/cosmos.group.v1.ThresholdDecisionPolicy","threshold":"1","windows":{"voting_period":"432000s","min_execution_period":"0s"}}'
+
+  local raw_output
+  raw_output=$(veranad tx co create-corporation \
+    --did "$did" --language en \
+    --doc-url "$doc_url" --doc-digest-sri "$doc_digest" \
+    --group-metadata "demo corporation" --group-policy-metadata "demo corporation policy" \
+    --members "$members_json" \
+    --decision-policy "$decision_policy_json" \
+    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
+    --output json -y 2>&1) || true
+  echo "$raw_output" >&2
+  local result
+  local tx_hash
+  result=$(echo "$raw_output" | extract_tx_json)
+  tx_hash=$(echo "$result" | jq -r '.txhash // empty')
+  if [ -z "$tx_hash" ]; then
+    err "Failed to create corporation. Raw output: $raw_output"
     return 1
   fi
-  perms=$(cat /tmp/perm_check.json)
+  ok "TX submitted: $tx_hash"
+  sleep 6
 
-  local perm_id
-  perm_id=$(echo "$perms" | jq -r --arg did "$did" --arg pt "$perm_type" '
-    .permissions[]? |
-    select(.type == $pt and .perm_state == "ACTIVE" and .did == $did) |
-    .id' | head -1)
+  CORPORATION_ID=$(extract_tx_event "$tx_hash" "create_corporation" "corporation_id")
+  CORPORATION=$(extract_tx_event "$tx_hash" "create_corporation" "policy_address")
+  if [ -z "$CORPORATION_ID" ] || [ -z "$CORPORATION" ]; then
+    err "Could not extract corporation_id/policy_address from tx events"
+    return 1
+  fi
+  ok "Corporation created: id=$CORPORATION_ID policy_address=$CORPORATION"
 
-  if [ -n "$perm_id" ]; then
-    echo "$perm_id"
+  # The Corporation pays the fees of every agent of the organization through
+  # their fee grants. At the VERANA_GAS_PRICE of the deployments (0.01uvna),
+  # 1 VNA pays for some 300 agent transactions.
+  log "Funding corporation..."
+  local fund_raw
+  fund_raw=$(veranad tx bank send "$USER_ACC_ADDR" "$CORPORATION" "${CORPORATION_FUNDING:-1000000uvna}" \
+    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
+    --output json -y 2>&1) || true
+  local fund_tx
+  fund_tx=$(echo "$fund_raw" | extract_tx_json | jq -r '.txhash // empty')
+  if [ -z "$fund_tx" ]; then
+    err "Failed to fund corporation. Raw output: $fund_raw"
+    return 1
+  fi
+  ok "Corporation funded (${CORPORATION_FUNDING:-1000000uvna}): TX $fund_tx"
+  sleep 6
+
+  log "Granting operator authorization to $USER_ACC_ADDR..."
+  local grant_msg
+  grant_msg=$(cat << GRANTEOF
+{
+  "@type": "/verana.de.v1.MsgGrantOperatorAuthorization",
+  "corporation": "$CORPORATION",
+  "operator": "$CORPORATION",
+  "grantee": "$USER_ACC_ADDR",
+  "msg_types": $msg_types,
+  "with_feegrant": true
+}
+GRANTEOF
+)
+  local grant_tx
+  grant_tx=$(exec_group_proposal "$CORPORATION" "Grant operator authorization to $USER_ACC_ADDR" "$grant_msg")
+  if [ -z "$grant_tx" ]; then
+    err "Failed to grant operator authorization via group proposal"
+    return 1
+  fi
+  ok "Operator authorization granted: TX $grant_tx"
+
+  export CORPORATION_ID CORPORATION
+}
+
+# Resolve an existing Corporation's policy_address from its id.
+# Usage: resolve_corporation <corporation_id>
+# Sets CORPORATION on success.
+resolve_corporation() {
+  local corporation_id=$1
+  local corp_json
+  corp_json=$(veranad query co get-corporation "$corporation_id" --node "$NODE_RPC" --output json 2>/dev/null || true)
+  CORPORATION=$(echo "$corp_json" | jq -r '.corporation.policy_address // .corporation.policyAddress // .policy_address // .policyAddress // empty' 2>/dev/null || echo "")
+  if [ -z "$CORPORATION" ]; then
+    err "Could not resolve policy_address for corporation $corporation_id"
+    return 1
+  fi
+  ok "Corporation $corporation_id policy_address: $CORPORATION"
+  export CORPORATION
+}
+
+# Make sure the operator's blanket OperatorAuthorization covers every message
+# type the service sends. A Corporation created for a narrow role keeps that
+# narrow grant, so a service that later takes on a wider role fails at its first
+# transaction of the new kind, far from the cause. Re-grants the union, so it
+# never removes a message type another role still needs.
+# Usage: ensure_operator_authorization <corporation> <grantee> <msg_types_json>
+ensure_operator_authorization() {
+  require_user_acc_addr || return 1
+  local corporation=$1
+  # The caller usually passes $USER_ACC_ADDR, which is empty when the keyring was imported
+  # directly, as CI does. require_user_acc_addr has just derived it, so fall back to it.
+  local grantee="${2:-$USER_ACC_ADDR}"
+  local required=$3
+
+  # An authorization is per corporation, and one account may operate several. Resolve the id
+  # of this corporation from its policy address, so the check never unions the grants of
+  # another corporation and then reports this one as complete.
+  local corporation_id
+  corporation_id=$(veranad query co list-corporations --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -r --arg addr "$corporation" '(.corporations // [])[] | select(.policy_address == $addr) | .id' | head -1)
+  if [ -z "$corporation_id" ]; then
+    err "Could not resolve a corporation id for policy address $corporation"
+    return 1
+  fi
+
+  local granted
+  granted=$(veranad query de list-operator-authorizations --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -c --arg g "$grantee" --arg c "$corporation_id" '[(.operator_authorizations // [])[]
+        | select(.operator == $g and (.corporation_id|tostring) == $c and (.revoked // null) == null)
+        | .msg_types[]] | unique') || granted='[]'
+  [ -n "$granted" ] || granted='[]'
+
+  local missing
+  missing=$(jq -c -n --argjson have "$granted" --argjson want "$required" '$want - $have')
+  if [ "$missing" = "[]" ]; then
+    ok "Operator authorization already covers every required message type"
+    return 0
+  fi
+  warn "Operator authorization is missing: $(echo "$missing" | jq -r 'join(", ")')"
+
+  local union
+  union=$(jq -c -n --argjson have "$granted" --argjson want "$required" '($have + $want) | unique')
+  local grant_msg
+  grant_msg=$(jq -c -n --arg c "$corporation" --arg g "$grantee" --argjson m "$union" \
+    '{"@type":"/verana.de.v1.MsgGrantOperatorAuthorization",corporation:$c,operator:$c,grantee:$g,msg_types:$m,with_feegrant:true}')
+
+  log "Widening the operator authorization to $(echo "$union" | jq -r 'length') message types..."
+  exec_group_proposal "$corporation" "Widen operator authorization" "$grant_msg" > /dev/null || {
+    err "Could not widen the operator authorization for $grantee"
+    return 1
+  }
+  sleep 6
+  ok "Operator authorization widened"
+}
+
+# ---------------------------------------------------------------------------
+# Ecosystem / Credential Schema / Participant helpers (verana.ec.v1 / cs.v1 / pp.v1)
+# ---------------------------------------------------------------------------
+
+# Onboarding mode constants (x/cs/v1 IssuerOnboardingMode / VerifierOnboardingMode /
+# HolderOnboardingMode enums — numeric, verified against verana-node's
+# tx.proto/types.proto).
+readonly ONBOARDING_MODE_OPEN=1
+readonly ONBOARDING_MODE_ECOSYSTEM=2
+readonly ONBOARDING_MODE_GRANTOR=3
+readonly HOLDER_MODE_ISSUER_OP=1
+readonly HOLDER_MODE_PERMISSIONLESS=2
+
+# Participant role constants (x/pp/v1 ParticipantRole enum). The CLI's [role]
+# positional arg and the indexer's `role` query param take different casing —
+# verified against verana-node's autocli.go (CLI: lowercase, hyphenated) and
+# vs-agent's VeranaIndexerService.ts (indexer: uppercase, underscored).
+readonly PP_ROLE_ISSUER="issuer"
+readonly PP_ROLE_VERIFIER="verifier"
+readonly PP_ROLE_ISSUER_GRANTOR="issuer-grantor"
+readonly PP_ROLE_VERIFIER_GRANTOR="verifier-grantor"
+readonly PP_ROLE_ECOSYSTEM="ecosystem"
+readonly PP_ROLE_HOLDER="holder"
+
+readonly PP_IDX_ROLE_ISSUER="ISSUER"
+readonly PP_IDX_ROLE_VERIFIER="VERIFIER"
+readonly PP_IDX_ROLE_ISSUER_GRANTOR="ISSUER_GRANTOR"
+readonly PP_IDX_ROLE_VERIFIER_GRANTOR="VERIFIER_GRANTOR"
+readonly PP_IDX_ROLE_ECOSYSTEM="ECOSYSTEM"
+readonly PP_IDX_ROLE_HOLDER="HOLDER"
+
+# Create an Ecosystem under a Corporation. Sets ECOSYSTEM_ID.
+# Usage: create_ecosystem <corporation> <did> [doc_url] [doc_digest_sri]
+create_ecosystem() {
+  local corporation=$1
+  local did=$2
+  local doc_url="${3:-https://verana-labs.github.io/governance-docs/EGF/example.pdf}"
+  local doc_digest="${4:-}"
+
+  if [ -z "$doc_digest" ]; then
+    doc_digest=$(compute_sri_digest "$doc_url")
+  fi
+
+  log "Creating Ecosystem (did: $did)..."
+  local raw_output
+  raw_output=$(veranad tx ec create-ecosystem \
+    "$corporation" "$did" en "$doc_url" "$doc_digest" \
+    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
+    --output json -y 2>&1) || true
+  echo "$raw_output" >&2
+  local tx_hash
+  tx_hash=$(echo "$raw_output" | extract_tx_json | jq -r '.txhash // empty')
+  if [ -z "$tx_hash" ]; then
+    err "Failed to create ecosystem. Raw output: $raw_output"
+    return 1
+  fi
+  ok "TX submitted: $tx_hash"
+  sleep 6
+
+  ECOSYSTEM_ID=$(extract_tx_event "$tx_hash" "create_ecosystem" "ecosystem_id")
+  if [ -z "$ECOSYSTEM_ID" ]; then
+    err "Could not extract ecosystem_id from tx events"
+    return 1
+  fi
+  ok "Ecosystem created: id=$ECOSYSTEM_ID"
+  export ECOSYSTEM_ID
+}
+
+# Find the Ecosystem of a Corporation that a given DID controls.
+#
+# Match on the DID, not on the Corporation alone. One Corporation may own
+# several Ecosystems, and a wiped wallet gives the agent a new did:webvh SCID.
+# Taking the first Ecosystem of the Corporation would then rebuild on one whose
+# controller DID no longer exists. Archived Ecosystems never match.
+# Usage: find_ecosystem_for_did <corporation_id> <did>
+# Prints the ecosystem id on stdout if found (and returns 0); returns 1 otherwise.
+find_ecosystem_for_did() {
+  local corporation_id=$1
+  local did=$2
+  local eco_id
+  eco_id=$(veranad query ec list-ecosystems --corporation-id "$corporation_id" --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -r --arg did "$did" \
+        'first((.ecosystems // [])[] | select(.did == $did and .archived == null) | .id) // empty' 2>/dev/null || echo "")
+  if [ -n "$eco_id" ]; then
+    echo "$eco_id"
     return 0
   fi
   return 1
 }
 
-# Convenience wrapper — backward-compatible.
-# Usage: find_active_issuer_perm <schema_id> <did>
-find_active_issuer_perm() {
-  find_active_perm "$1" "ISSUER" "$2"
+# Create a Credential Schema under an Ecosystem. Echoes the schema id on success.
+# Usage: create_credential_schema <corporation> <ecosystem_id> <schema_json> <issuer_mode> <verifier_mode> <holder_mode>
+create_credential_schema() {
+  local corporation=$1
+  local ecosystem_id=$2
+  local schema_json=$3
+  local issuer_mode=$4
+  local verifier_mode=$5
+  local holder_mode=$6
+
+  log "Creating credential schema under ecosystem $ecosystem_id (issuer=$issuer_mode, verifier=$verifier_mode, holder=$holder_mode)..."
+  local raw_output
+  raw_output=$(veranad tx cs create-credential-schema \
+    "$ecosystem_id" "$schema_json" "$issuer_mode" "$verifier_mode" "$holder_mode" \
+    2 uvna sha384 \
+    --corporation "$corporation" \
+    --issuer-grantor-validation-validity-period '{"value":0}' \
+    --verifier-grantor-validation-validity-period '{"value":0}' \
+    --issuer-validation-validity-period '{"value":0}' \
+    --verifier-validation-validity-period '{"value":0}' \
+    --holder-validation-validity-period '{"value":0}' \
+    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
+    --output json -y 2>&1) || true
+  echo "$raw_output" >&2
+  local tx_hash
+  tx_hash=$(echo "$raw_output" | extract_tx_json | jq -r '.txhash // empty')
+  if [ -z "$tx_hash" ]; then
+    err "Failed to create credential schema. Raw output: $raw_output"
+    return 1
+  fi
+  ok "TX submitted: $tx_hash"
+  sleep 8
+
+  local schema_id
+  schema_id=$(extract_tx_event "$tx_hash" "create_credential_schema" "credential_schema_id")
+  if [ -z "$schema_id" ]; then
+    sleep 6
+    schema_id=$(extract_tx_event "$tx_hash" "create_credential_schema" "credential_schema_id")
+  fi
+  if [ -z "$schema_id" ]; then
+    err "Could not extract schema ID"
+    return 1
+  fi
+  ok "Credential schema created: id=$schema_id"
+  echo "$schema_id"
 }
 
-# Convenience wrapper for verifier permission checks.
-# Usage: find_active_verifier_perm <schema_id> <did>
-find_active_verifier_perm() {
-  find_active_perm "$1" "VERIFIER" "$2"
+# Create a Root Participant (role=ECOSYSTEM) for a schema. Echoes the participant id.
+# Usage: create_root_participant <corporation> <schema_id> <did>
+create_root_participant() {
+  local corporation=$1
+  local schema_id=$2
+  local did=$3
+
+  log "Creating root participant for schema $schema_id..."
+
+  local raw_output
+  raw_output=$(veranad tx pp create-root-participant \
+    "$schema_id" "$did" 0 0 0 \
+    --corporation "$corporation" \
+    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
+    --output json -y 2>&1) || true
+  echo "$raw_output" >&2
+  local tx_hash
+  tx_hash=$(echo "$raw_output" | extract_tx_json | jq -r '.txhash // empty')
+  if [ -z "$tx_hash" ]; then
+    err "Failed to create root participant. Raw output: $raw_output"
+    return 1
+  fi
+  ok "TX submitted: $tx_hash"
+  sleep 6
+
+  local participant_id
+  participant_id=$(extract_tx_event "$tx_hash" "create_root_participant" "root_participant_id")
+  if [ -z "$participant_id" ]; then
+    err "Could not extract root participant ID"
+    return 1
+  fi
+  ok "Root participant created: id=$participant_id"
+  echo "$participant_id"
 }
 
-# ---------------------------------------------------------------------------
-# Trust Registry duplicate detection
-# ---------------------------------------------------------------------------
+# Submit StartParticipantOP. The applicant agent drives the rest (DIDComm
+# onboarding-request) automatically once this lands on-chain — see
+# startParticipantOPAutoFlow in vs-agent. Echoes the new participant id.
+# Usage: start_participant_op <corporation> <role> <validator_participant_id> <did>
+#   role: one of $PP_ROLE_ISSUER / $PP_ROLE_VERIFIER / $PP_ROLE_HOLDER / ...
+start_participant_op() {
+  local corporation=$1
+  local role=$2
+  local validator_participant_id=$3
+  local did=$4
+  local vs_operator="${5:-}"
+  local vs_operator_msg_types="${6:-}"
 
-# Check if the DID already owns a trust registry with an identical schema.
-# Compares canonized schemas (with $id removed) to detect duplicates.
-# Returns 0 (true) if a matching TR+schema exists; 1 (false) otherwise.
-# On success, prints "trust_registry_id schema_id" to stdout.
-# Usage: has_trust_registry_for_schema <did> <local_schema_json>
-has_trust_registry_for_schema() {
-  local did=$1
-  local local_schema=$2
+  # The vs_operator and its msg types are frozen at creation: the only way to
+  # correct them later is to revoke the participant and create it again.
+  local vsoa_args=()
+  if [ -n "$vs_operator" ]; then
+    # v0.10.5 rejects a fee grant that has no positive fee spend limit. The chain
+    # applies the limit as one allowance for each de vs_operator_fee_period (24h).
+    vsoa_args=(--vs-operator "$vs_operator"
+               --vs-operator-authz-msg-types "$vs_operator_msg_types"
+               --vs-operator-authz-with-feegrant
+               --vs-operator-authz-fee-spend-limit "${VSOA_FEE_SPEND_LIMIT:-50000000uvna}")
+  fi
 
-  # Canonize local schema: remove $id, sort keys
-  local local_canon
-  local_canon=$(echo "$local_schema" | jq -Sc 'del(."$id")')
+  log "Starting participant OP (role=$role) against validator $validator_participant_id..."
+  local raw_output
+  raw_output=$(veranad tx pp start-participant-op \
+    "$role" "$validator_participant_id" "$did" \
+    --corporation "$corporation" \
+    "${vsoa_args[@]}" \
+    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
+    --output json -y 2>&1) || true
+  echo "$raw_output" >&2
+  local tx_hash
+  tx_hash=$(echo "$raw_output" | extract_tx_json | jq -r '.txhash // empty')
+  if [ -z "$tx_hash" ]; then
+    err "Failed to start participant OP. Raw output: $raw_output"
+    return 1
+  fi
+  ok "TX submitted: $tx_hash"
+  sleep 6
 
-  # Query indexer for trust registries owned by this DID
-  local url="${INDEXER_URL}/verana/tr/v1/list?did=${did}"
-  local http_code
-  http_code=$(curl -s -o /tmp/tr_list.json -w '%{http_code}' "$url")
+  # The broadcast answer only reports that CheckTx accepted the transaction. Read
+  # the result, or an execution failure such as "out of gas" appears later as a
+  # missing event, which hides the cause.
+  local tx_json code
+  tx_json=$(veranad query tx "$tx_hash" --node "$NODE_RPC" --output json 2>/dev/null || echo "")
+  code=$(echo "$tx_json" | jq -r '.code // empty' 2>/dev/null)
+  if [ -n "$code" ] && [ "$code" != "0" ]; then
+    err "StartParticipantOP failed on chain (code $code): $(echo "$tx_json" | jq -r '.raw_log // "no log"' 2>/dev/null | head -c 300)"
+    return 1
+  fi
+
+  local participant_id
+  participant_id=$(extract_tx_event "$tx_hash" "start_participant_op" "participant_id")
+  if [ -z "$participant_id" ]; then
+    err "Could not extract participant ID from tx $tx_hash (code ${code:-unknown})"
+    return 1
+  fi
+  ok "Participant OP started: id=$participant_id (state: PENDING)"
+  echo "$participant_id"
+}
+
+# Validate a pending participant with the Corporation operator account.
+#
+# Use this when the validator participant holds the ECOSYSTEM role. The agent
+# admin API cannot do it. [MOD-PP-MSG-3-2-1] accepts either a Corporation
+# operator or a vs_operator delegated ON THE VALIDATOR PARTICIPANT, and
+# vsoaPermittedMsgTypes grants no message type to the ECOSYSTEM role. An agent
+# therefore never gets the authority to validate against an Ecosystem it
+# controls. POST /v2/vt/flows/<id>/validate therefore answers submission=OPERATOR
+# and broadcasts nothing, which is why this function must send the transaction.
+#
+# The applicant agent completes the credential exchange on its own, because it
+# reacts to the SetParticipantOPToValidated event from the indexer.
+# Usage: set_participant_validated <corporation> <participant_id>
+set_participant_validated() {
+  local corporation=$1
+  local participant_id=$2
+
+  log "Validating participant $participant_id as the Corporation operator..."
+  local raw_output
+  raw_output=$(veranad tx pp set-participant-op-validated \
+    "$participant_id" \
+    --corporation "$corporation" \
+    --validation-fees 0 --issuance-fees 0 --verification-fees 0 \
+    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
+    --output json -y 2>&1) || true
+  echo "$raw_output" >&2
+  local tx_hash
+  tx_hash=$(echo "$raw_output" | extract_tx_json | jq -r '.txhash // empty')
+  if [ -z "$tx_hash" ]; then
+    err "Failed to validate participant $participant_id. Raw output: $raw_output"
+    return 1
+  fi
+  ok "TX submitted: $tx_hash"
+
+  # A fixed wait loses the race when a block is slow, and the participant then
+  # looks unvalidated although the transaction lands a second later. Poll.
+  local state=""
+  local i
+  for i in $(seq 1 15); do
+    sleep 4
+    state=$(veranad query pp get-participant "$participant_id" --node "$NODE_RPC" --output json 2>/dev/null \
+      | jq -r '.participant.op_state // empty' 2>/dev/null || echo "")
+    [ "$state" = "VALIDATED" ] && break
+  done
+  if [ "$state" != "VALIDATED" ]; then
+    err "Participant $participant_id is in state '${state:-unknown}', not VALIDATED"
+    return 1
+  fi
+  ok "Participant validated: id=$participant_id"
+}
+
+# Self-create a participant (OPEN mode only — no onboarding process). Echoes the
+# new participant id.
+# Usage: self_create_participant <corporation> <role> <validator_participant_id> <did>
+#   role: one of $PP_ROLE_ISSUER / $PP_ROLE_VERIFIER
+self_create_participant() {
+  local corporation=$1
+  local role=$2
+  local validator_participant_id=$3
+  local did=$4
+  local vs_operator="${5:-}"
+  local vs_operator_msg_types="${6:-}"
+
+  local vsoa_args=()
+  if [ -n "$vs_operator" ]; then
+    # v0.10.5 rejects a fee grant that has no positive fee spend limit. The chain
+    # applies the limit as one allowance for each de vs_operator_fee_period (24h).
+    vsoa_args=(--vs-operator "$vs_operator"
+               --vs-operator-authz-msg-types "$vs_operator_msg_types"
+               --vs-operator-authz-with-feegrant
+               --vs-operator-authz-fee-spend-limit "${VSOA_FEE_SPEND_LIMIT:-50000000uvna}")
+  fi
+
+  log "Self-creating participant (role=$role) against validator $validator_participant_id..."
+  local raw_output
+  raw_output=$(veranad tx pp self-create-participant \
+    "$role" "$validator_participant_id" "$did" \
+    --corporation "$corporation" \
+    "${vsoa_args[@]}" \
+    --from "$USER_ACC" --chain-id "$CHAIN_ID" --keyring-backend test \
+    --fees "$FEES" --gas auto --gas-adjustment 1.5 --node "$NODE_RPC" \
+    --output json -y 2>&1) || true
+  echo "$raw_output" >&2
+  local tx_hash
+  tx_hash=$(echo "$raw_output" | extract_tx_json | jq -r '.txhash // empty')
+  if [ -z "$tx_hash" ]; then
+    err "Failed to self-create participant. Raw output: $raw_output"
+    return 1
+  fi
+  ok "TX submitted: $tx_hash"
+  sleep 6
+
+  local participant_id
+  participant_id=$(extract_tx_event "$tx_hash" "create_participant" "participant_id")
+  if [ -z "$participant_id" ]; then
+    err "Could not extract participant ID"
+    return 1
+  fi
+  ok "Participant self-created: id=$participant_id"
+  echo "$participant_id"
+}
+
+# Check the v4 indexer for an active participant of a given role/DID/schema.
+# Usage: find_active_participant <schema_id> <role> <did>
+#   role: one of $PP_IDX_ROLE_ISSUER / $PP_IDX_ROLE_VERIFIER / $PP_IDX_ROLE_ECOSYSTEM / ...
+# Prints the participant id on stdout if found (and returns 0); returns 1 otherwise.
+find_active_participant() {
+  local schema_id=$1
+  local role=$2
+  local did=$3
+  local url="${INDEXER_URL}/v4/participant/list?schema_id=${schema_id}&role=${role}&did=$(printf '%s' "$did" | jq -sRr @uri)&participant_state=ACTIVE"
+
+  local resp http_code
+  http_code=$(curl -s -o /tmp/participant_check.json -w '%{http_code}' "$url")
   if [ "$http_code" != "200" ]; then
     return 1
   fi
+  resp=$(cat /tmp/participant_check.json)
 
-  local tr_ids
-  tr_ids=$(jq -r '.trust_registries[]?.id // empty' /tmp/tr_list.json)
-  if [ -z "$tr_ids" ]; then
-    return 1
+  local participant_id
+  participant_id=$(echo "$resp" | jq -r '
+    .participants[]? |
+    select(.revoked == null and .slashed == null) |
+    .id' | head -1)
+
+  if [ -n "$participant_id" ]; then
+    echo "$participant_id"
+    return 0
   fi
-
-  # For each trust registry, list its schemas and compare
-  for tr_id in $tr_ids; do
-    local cs_url="${INDEXER_URL}/verana/cs/v1/list?trust_registry_id=${tr_id}"
-    local cs_code
-    cs_code=$(curl -s -o /tmp/cs_list.json -w '%{http_code}' "$cs_url")
-    if [ "$cs_code" != "200" ]; then
-      continue
-    fi
-
-    # Iterate over schemas in this trust registry
-    local schema_entries
-    schema_entries=$(jq -c '.credential_schemas[]?' /tmp/cs_list.json)
-    while IFS= read -r entry; do
-      [ -z "$entry" ] && continue
-      local cs_id on_chain_schema on_chain_canon
-      cs_id=$(echo "$entry" | jq -r '.id')
-      on_chain_schema=$(echo "$entry" | jq -r '.json_schema // empty')
-      if [ -z "$on_chain_schema" ]; then
-        continue
-      fi
-      on_chain_canon=$(echo "$on_chain_schema" | jq -Sc 'del(."$id")')
-      if [ "$local_canon" = "$on_chain_canon" ]; then
-        echo "$tr_id $cs_id"
-        return 0
-      fi
-    done <<< "$schema_entries"
-  done
-
   return 1
 }
 
+# Find a participant of a DID/schema/role and print "<id>\t<vs_operator>".
+# Unlike find_active_participant this also returns a PENDING entry, and it
+# reports the vs_operator, so a caller can tell an entry it can use from one
+# that names a different account and has to be recreated.
+# Usage: find_participant_with_vs_operator <schema_id> <role> <did>
+find_participant_with_vs_operator() {
+  local schema_id=$1
+  local role=$2
+  local did=$3
+  veranad query pp list-participants --schema-id "$schema_id" --role "$role" --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -r --arg did "$did" '(.participants // [])[]
+        | select(.did == $did and .revoked == null and .slashed == null)
+        | [(.id|tostring), (.vs_operator // "")] | @tsv' \
+    | head -1
+}
+
+# Read a VS Agent's public DID from its did:webvh log. Each line of the log is
+# a version entry, and .state.id carries the DID, which is SCID-stable across
+# versions.
+# Usage: fetch_did_from_log <public_base_url>
+fetch_did_from_log() {
+  local base_url=$1
+  local did_log did
+  did_log=$(curl -sf "${base_url}/.well-known/did.jsonl" 2>/dev/null) || return 1
+  did=$(echo "$did_log" | tail -1 | jq -r '.state.id // empty' 2>/dev/null)
+  [ -z "$did" ] && return 1
+  echo "$did"
+}
+
+# Find an ECS credential schema by its JSON Schema title, under the Ecosystem
+# that a given DID controls.
+# Usage: find_ecs_schema_id <ecosystem_did> <title>
+#   title: OrganizationCredential | PersonaCredential | ServiceCredential | UserAgentCredential
+find_ecs_schema_id() {
+  local ecosystem_did=$1
+  local title=$2
+  if [ -z "$ecosystem_did" ]; then
+    err "No ECS Ecosystem DID. set_network_vars could not read it from the ECS Ecosystem agent."
+    return 1
+  fi
+
+  local ecosystem_id
+  ecosystem_id=$(curl -sf "${INDEXER_URL}/v4/ecosystem/list" 2>/dev/null \
+    | jq -r --arg did "$ecosystem_did" '(.ecosystems // [])[]
+        | select(.did == $did and (.archived == null or .archived == false)) | .id' | head -1)
+  [ -z "$ecosystem_id" ] && return 1
+
+  local schema_id
+  schema_id=$(veranad query cs list-schemas --ecosystem_id "$ecosystem_id" --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -r --arg title "$title" '(.schemas // [])[]
+        | select((.json_schema | fromjson | .title) == $title) | .id' | head -1)
+  [ -z "$schema_id" ] && return 1
+  echo "$schema_id"
+}
+
+# Check the v4 indexer for the (root, ECOSYSTEM-role) active participant of a
+# schema — the validator_participant_id start_participant_op/
+# self_create_participant need.
+# Usage: find_root_participant <schema_id>
+# Prints the participant id on stdout if found (and returns 0); returns 1 otherwise.
+find_root_participant() {
+  local schema_id=$1
+  local url="${INDEXER_URL}/v4/participant/list?schema_id=${schema_id}&role=${PP_IDX_ROLE_ECOSYSTEM}&participant_state=ACTIVE"
+
+  local resp http_code
+  http_code=$(curl -s -o /tmp/root_participant_check.json -w '%{http_code}' "$url")
+  if [ "$http_code" != "200" ]; then
+    return 1
+  fi
+  resp=$(cat /tmp/root_participant_check.json)
+
+  local participant_id
+  participant_id=$(echo "$resp" | jq -r '.participants[0].id // empty')
+
+  if [ -n "$participant_id" ]; then
+    echo "$participant_id"
+    return 0
+  fi
+  return 1
+}
+
+# Extract a custom (non-ECS) schema's numeric ID from a VS Agent's DID
+# document, by finding its "*-jsc-vp" LinkedVerifiablePresentation service
+# entry (excluding the 4 ECS ones) and resolving the VTJSC's jsonSchema $ref.
+# Usage: discover_custom_schema_id <did_document_url>
+discover_custom_schema_id() {
+  local did_doc_url=$1
+  local did_doc
+  did_doc=$(curl -sf "$did_doc_url" 2>/dev/null) || return 1
+
+  local vp_url
+  vp_url=$(echo "$did_doc" | jq -r '
+    .service[] |
+    select(.type == "LinkedVerifiablePresentation") |
+    select(.id | test("organization-jsc-vp|persona-jsc-vp|service-jsc-vp|ua-jsc-vp") | not) |
+    select(.id | test("jsc-vp")) |
+    .serviceEndpoint' | head -1)
+  [ -z "$vp_url" ] && return 1
+
+  local vp schema_ref schema_id
+  vp=$(curl -sf "$vp_url") || return 1
+  schema_ref=$(echo "$vp" | jq -r '.verifiableCredential[0].credentialSubject.jsonSchema."$ref" // empty')
+  schema_id=$(echo "$schema_ref" | grep -oE '[0-9]+$')
+  [ -z "$schema_id" ] && return 1
+
+  echo "$schema_id"
+}
+
+# Read the JSON Schema Credential id of a credential schema from the DID
+# Document of its Ecosystem controller.
+#
+# The v2 API has no route that lists these credentials. The controller publishes
+# one LinkedVerifiablePresentation for each schema, named
+# #vpr-schemas-<schema_id>-vtjsc-vp, and that presentation carries the credential.
+# Usage: fetch_vtjsc_credential_id <did_doc_url> <schema_id>
+fetch_vtjsc_credential_id() {
+  local did_doc_url=$1
+  local schema_id=$2
+
+  local vp_url
+  vp_url=$(curl -sf "$did_doc_url" 2>/dev/null \
+    | jq -r --arg frag "vpr-schemas-${schema_id}-vtjsc-vp" '
+        .service[]? | select(.type == "LinkedVerifiablePresentation")
+        | select(.id | endswith($frag)) | .serviceEndpoint' 2>/dev/null | head -1)
+  if [ -z "$vp_url" ]; then
+    err "No VTJSC service for schema $schema_id in $did_doc_url"
+    return 1
+  fi
+
+  local cred_id
+  cred_id=$(curl -sf "$vp_url" 2>/dev/null | jq -r '.verifiableCredential[0].id // empty' 2>/dev/null)
+  if [ -z "$cred_id" ]; then
+    err "The presentation at $vp_url carries no credential id"
+    return 1
+  fi
+  echo "$cred_id"
+}
+
 # ---------------------------------------------------------------------------
-# Date helper (macOS + Linux compatible)
+# vt-flow validator helper (/v2/vt/flows) — verified against the vs-agent source
+# (VtFlowsController.ts): unauthenticated on the internal admin listener.
 # ---------------------------------------------------------------------------
 
-# Return a UTC timestamp N seconds in the future
-# Usage: future_timestamp [seconds]
-future_timestamp() {
-  local seconds=${1:-15}
-  date -u -v+"${seconds}"S +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
-    || date -u -d "+${seconds} seconds" +"%Y-%m-%dT%H:%M:%SZ"
+# Resolve the Corporation that owns a DID, and set CORPORATION_ID and CORPORATION.
+#
+# The DID ownership invariant of the VPR gives every DID a single owning Corporation, so any
+# active Participant entry that carries the DID names it. Services of one organization share
+# that Corporation; they do not each need one.
+# Usage: resolve_corporation_for_did <did>
+resolve_corporation_for_did() {
+  local did=$1
+  local corp_id
+  # Filter on the node: an unfiltered list is paged, and it answers with the oldest entries.
+  corp_id=$(veranad query pp list-participants --did "$did" --node "$NODE_RPC" --output json 2>/dev/null \
+    | jq -r 'first((.participants // [])[]
+        | select(.revoked == null and .slashed == null)
+        | .corporation_id) // empty')
+  if [ -z "$corp_id" ]; then
+    err "No active Participant carries $did, so its Corporation cannot be resolved"
+    return 1
+  fi
+  CORPORATION_ID="$corp_id"
+  export CORPORATION_ID
+  resolve_corporation "$CORPORATION_ID"
+}
+
+# Find a pending onboarding request from a given peer DID and validate it,
+# offering the credential if the flow calls for one.
+#
+# The applicant agent composes its own ECS claims from its ECS_CLAIMS_*
+# variables and sends them on the onboarding request ([VSA-VTI-CFG-ENV-ECS]),
+# so the validator has nothing to supply: it reads the claims off the flow
+# record and signs them.
+# Usage: validate_pending_flow <admin_api> <peer_did> [schema_id]
+validate_pending_flow() {
+  local admin_api=$1
+  local peer_did=$2
+  local schema_id="${3:-}"
+
+  log "Looking up pending vt-flow from $peer_did on $admin_api..."
+  # The v2 API spells these keys peerDid and schemaId. It drops an unknown key
+  # in silence and answers with an unfiltered page, so a wrong name gives a
+  # flow that belongs to another peer.
+  #
+  # Do NOT filter on AWAITING_OR. The agent drives the flow on its own, so by the
+  # time this runs the validator often shows VALIDATING already, and a filter on
+  # one state then reports "no flow" for a flow that only waits for this call.
+  # Accept every state that validate accepts, and take the newest match.
+  local query="role=validator&peerDid=$(printf '%s' "$peer_did" | jq -sRr @uri)"
+  [ -n "$schema_id" ] && query="${query}&schemaId=${schema_id}"
+
+  local flows session_id
+  flows=$(curl -sf "${admin_api}/v2/vt/flows?${query}" 2>/dev/null)
+  session_id=$(echo "$flows" | jq -r '
+    [(.items // [])[]
+     | select(.flowState == "AWAITING_OR" or .flowState == "VALIDATING"
+              or .flowState == "OOB_PENDING" or .flowState == "VALIDATED_PENDING_CLAIMS"
+              or .flowState == "AWAITING_VALIDATION_TX" or .flowState == "VALIDATION_TX_FAILED")]
+    | sort_by(.lastEventAt // .createdAt) | last | .participantSessionId // empty' 2>/dev/null)
+  if [ -z "$session_id" ]; then
+    err "No validatable flow found from $peer_did on $admin_api"
+    err "States seen: $(echo "$flows" | jq -r '[(.items // [])[].flowState] | join(", ")' 2>/dev/null)"
+    return 1
+  fi
+  ok "Found flow awaiting validation: $session_id"
+
+  # Validate checks the claims against the schema and records the fee terms. It
+  # answers submission=OPERATOR when the agent holds no authorization on the
+  # validator entry, and then it broadcasts nothing: set_participant_validated
+  # sends the transaction, and the agent completes the flow on the chain event.
+  # A schema with no validity period makes effectiveUntil mandatory here: the API
+  # answers 400 INVALID_INPUT without it. The value becomes the validUntil of the
+  # credential, so keep it within the effective_until of the ISSUER entry.
+  local result http_code
+  http_code=$(curl -s -o /tmp/vt_flow_validate.json -w '%{http_code}' \
+    -X POST -H 'Content-Type: application/json' \
+    -d "{\"effectiveUntil\":\"${VT_FLOW_EFFECTIVE_UNTIL:-2027-09-29T00:00:00Z}\"}" \
+    "${admin_api}/v2/vt/flows/${session_id}/validate")
+  result=$(cat /tmp/vt_flow_validate.json)
+  if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
+    err "Failed to validate flow $session_id (HTTP $http_code). Response: $result"
+    return 1
+  fi
+  ok "Flow validated: $session_id (submission: $(echo "$result" | jq -r '.validation.submission // "unknown"'))"
+  echo "$session_id"
+}
+
+# Check whether a flow from a peer DID is already COMPLETED or VALIDATED
+# (idempotency: skip re-validating).
+# Usage: has_completed_flow <admin_api> <peer_did> [schema_id]
+has_completed_flow() {
+  local admin_api=$1
+  local peer_did=$2
+  local schema_id="${3:-}"
+  # Give the schema_id when you can. A peer keeps its finished flows on other
+  # schemas, for example on a schema that a new one replaced, and without the
+  # filter such a flow hides the pending flow on the new schema.
+  local query="role=validator&peerDid=$(printf '%s' "$peer_did" | jq -sRr @uri)"
+  [ -n "$schema_id" ] && query="${query}&schemaId=${schema_id}"
+
+  local flows
+  flows=$(curl -sf "${admin_api}/v2/vt/flows?${query}" 2>/dev/null) || return 1
+  # The v2 record names the state flowState, and a list answers with a page.
+  #
+  # Treat an in-flight validation as done too. The validator decided already, and
+  # the chain or the credential exchange carries the flow from here, so a second
+  # validate call would only repeat the decision.
+  #
+  # VALIDATION_TX_FAILED is deliberately absent: a failed transaction needs a new
+  # decision, so validate_pending_flow claims that state instead.
+  #
+  # AWAITING_VALIDATION_TX appears in both functions. The caller checks this one
+  # first, so a flow that already waits for its transaction counts as done and no
+  # second decision goes out.
+  local match
+  match=$(echo "$flows" | jq -r '
+    [(.items // [])[] | .flowState
+     | select(. == "COMPLETED" or . == "VALIDATED" or . == "CRED_OFFERED"
+              or . == "AWAITING_VALIDATION_TX" or . == "VALIDATION_TX_SUBMITTED")] | length' 2>/dev/null || echo "0")
+  [ "${match:-0}" -gt 0 ]
 }

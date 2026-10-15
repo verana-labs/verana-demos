@@ -2,35 +2,22 @@ import { NextResponse } from "next/server";
 import {
   SERVICE_IDS,
   BASE_DOMAIN,
-  RESOLVER_URL,
-  fetchJson,
+  resolveTrust,
   serviceDid,
+  type EcsCredential,
   type ServiceId,
 } from "../../../lib/server-env";
 
 export const dynamic = "force-dynamic";
 
-// Proof-of-Trust summary for one demo service: trust-resolve its DID
-// against the network resolver and extract the service (ECS-SERVICE) and
-// operator (ECS-ORG / ECS-PERSONA) credential claims — the same picture
-// verana.io shows in its Resolve-a-DID widget.
+// Proof-of-Trust summary for one demo service. The indexer resolves the DID
+// (v4 Verifiable Trust) and returns the ECS credentials the service presents.
+// The route extracts the Service claims and the Organization (or Persona)
+// claims of the operator, plus the active Participant roles of the service.
+// This is the same picture verana.io shows in its Resolve-a-DID widget.
 
-type ResolvedCredential = {
-  ecsType?: string;
-  result?: string;
-  claims?: Record<string, unknown>;
-};
-
-type ResolveResult = {
-  trustStatus?: string;
-  credentials?: ResolvedCredential[];
-};
-
-function claimStr(
-  cred: ResolvedCredential | undefined,
-  key: string,
-): string | null {
-  const value = cred?.claims?.[key];
+function claimStr(cred: EcsCredential | undefined, key: string): string | null {
+  const value = cred?.credentialSubject?.[key];
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
@@ -51,11 +38,7 @@ export async function GET(
     );
   }
 
-  // First-time resolutions can take a few seconds; results are cached.
-  const result = await fetchJson<ResolveResult>(
-    `${RESOLVER_URL}/v1/trust/resolve?did=${encodeURIComponent(did)}&detail=full`,
-    30_000,
-  );
+  const result = await resolveTrust(did);
   if (!result) {
     return NextResponse.json(
       { error: "Trust resolution unavailable" },
@@ -63,14 +46,28 @@ export async function GET(
     );
   }
 
-  const service = result.credentials?.find((c) => c.ecsType === "ECS-SERVICE");
-  const org = result.credentials?.find(
-    (c) => c.ecsType === "ECS-ORG" || c.ecsType === "ECS-PERSONA",
-  );
+  const credentials = result.ecsCredentials ?? [];
+  const service = credentials.find((c) => c.ecsSchema === "ServiceCredential");
+  const org =
+    credentials.find((c) => c.ecsSchema === "OrganizationCredential") ??
+    credentials.find((c) => c.ecsSchema === "PersonaCredential");
+
+  // The HOLDER entry only anchors the Service credential itself, so the card
+  // shows the roles the service plays for other participants.
+  const roles = (result.participations ?? [])
+    .filter((p) => p.role !== "HOLDER")
+    .map((p) => ({
+      id: p.id,
+      role: p.role,
+      credentialSchemaId: p.credentialSchemaId,
+    }));
 
   return NextResponse.json({
     did,
-    trustStatus: result.trustStatus ?? "UNTRUSTED",
+    trusted: result.trusted,
+    evaluatedAtTime: result.evaluatedAtTime,
+    expiresAtTime: result.expiresAtTime,
+    corporationId: result.corporationId,
     service: service
       ? {
           name: claimStr(service, "name"),
@@ -80,11 +77,13 @@ export async function GET(
       : null,
     org: org
       ? {
+          kind: org.ecsSchema === "PersonaCredential" ? "persona" : "organization",
           name: claimStr(org, "name"),
           countryCode: claimStr(org, "countryCode"),
           registryId: claimStr(org, "registryId"),
           address: claimStr(org, "address"),
         }
       : null,
+    roles,
   });
 }

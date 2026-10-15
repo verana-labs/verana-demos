@@ -9,7 +9,7 @@ on:
         type: choice
         options:
           - deploy
-          - get-credentials
+          - onboard-verifier
           - deploy-web
           - all
         default: all
@@ -53,28 +53,6 @@ jobs:
             echo "${key}=${!key}" >> "$GITHUB_ENV"
           done < <(grep -E '^[A-Z_]+=' verifier-web-vs/config.env)
 
-      - name: Resolve deployment.yaml placeholders
-        run: |
-          CHILD_VS_NAME="verifier-web-${VS_NAME}"
-          sed -e "s/__NETWORK__/${NETWORK}/g" -e "s/__CHILD_VS_NAME__/${CHILD_VS_NAME}/g" -e "s/__VS_NAME__/${VS_NAME}/g" \
-            verifier-web-vs/deployment.yaml > /tmp/deployment-resolved.yaml
-          echo "CHILD_VS_NAME=${CHILD_VS_NAME}" >> "$GITHUB_ENV"
-          echo "--- Resolved deployment.yaml ---"
-          cat /tmp/deployment-resolved.yaml
-
-      - name: Parse deployment.yaml
-        run: |
-          CHART_SOURCE=$(yq '.chartSource' /tmp/deployment-resolved.yaml)
-          CHART_VERSION=$(yq '.chartVersion' /tmp/deployment-resolved.yaml)
-          CHART_NAMESPACE="${{ secrets.K8S_NAMESPACE }}"
-          RELEASE_NAME=$(yq '.name' /tmp/deployment-resolved.yaml)
-          INGRESS_HOST=$(yq '.ingress.host' /tmp/deployment-resolved.yaml)
-          echo "CHART_SOURCE=${CHART_SOURCE}" >> "$GITHUB_ENV"
-          echo "CHART_VERSION=${CHART_VERSION}" >> "$GITHUB_ENV"
-          echo "CHART_NAMESPACE=${CHART_NAMESPACE}" >> "$GITHUB_ENV"
-          echo "RELEASE_NAME=${RELEASE_NAME}" >> "$GITHUB_ENV"
-          echo "INGRESS_HOST=${INGRESS_HOST}" >> "$GITHUB_ENV"
-
       - name: Set up kubeconfig
         run: |
           mkdir -p ~/.kube
@@ -87,27 +65,107 @@ jobs:
         with:
           version: 'v1.29.9'
 
+      # The "deploy-web" step builds and deploys the application image only.
+      # It reads no chain state, so it needs neither the CLI nor an account.
       - name: Install veranad
+        if: inputs.step != 'deploy-web'
         run: |
-          VERANAD_VERSION="v0.9.5"
+          VERANAD_VERSION="v0.10.6"
           curl -sfL "https://github.com/verana-labs/verana-node/releases/download/${VERANAD_VERSION}/veranad-linux-amd64" \
             -o /usr/local/bin/veranad
           chmod +x /usr/local/bin/veranad
           veranad version
 
-      - name: Import account from mnemonic
+      # Two accounts. The Corporation operator signs every provisioning transaction and belongs
+      # to organization-vs; the agent account becomes the vs_operator of this service's
+      # Participant entries. [MOD-DE-MSG-5-2] makes the two mutually exclusive for one grantee.
+      - name: Import accounts from mnemonics
+        if: inputs.step != 'deploy-web'
+        env:
+          OPERATOR_MNEMONIC: ${{ secrets.ORGANIZATION_VS_MNEMONIC }}
+          AGENT_MNEMONIC: ${{ secrets.VERIFIER_WEB_VS_AGENT_MNEMONIC }}
         run: |
-          echo "${{ secrets.VS_DEMO_MNEMONIC }}" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
+          for name in OPERATOR_MNEMONIC AGENT_MNEMONIC; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret for ${name} is empty. Set ORGANIZATION_VS_MNEMONIC and VERIFIER_WEB_VS_AGENT_MNEMONIC as repository secrets."
+              exit 1
+            fi
+          done
+          echo "$OPERATOR_MNEMONIC" | veranad keys add "${{ env.USER_ACC }}" --recover --keyring-backend test
+          USER_ACC_ADDR=$(veranad keys show "${{ env.USER_ACC }}" -a --keyring-backend test)
+          echo "USER_ACC_ADDR=${USER_ACC_ADDR}" >> "$GITHUB_ENV"
+          echo "Corporation operator: ${USER_ACC_ADDR}"
+          echo "$AGENT_MNEMONIC" | veranad keys add "${{ env.AGENT_ACC }}" --recover --keyring-backend test
+          AGENT_ADDR=$(veranad keys show "${{ env.AGENT_ACC }}" -a --keyring-backend test)
+          echo "AGENT_ADDR=${AGENT_ADDR}" >> "$GITHUB_ENV"
+          echo "Agent account (vs_operator): ${AGENT_ADDR}"
 
-      # -----------------------------------------------------------------------
-      # DEPLOY: Install/upgrade VS Agent via Helm
-      # -----------------------------------------------------------------------
+      - name: Resolve organization-vs DID
+        if: inputs.step == 'deploy' || inputs.step == 'onboard-verifier' || inputs.step == 'all'
+        run: |
+          source common/common.sh
+          set_network_vars "$NETWORK"
+          ORG_PUBLIC_URL="https://organization-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
+          # Read the did:webvh from the log. /.well-known/did.json answers with the
+          # did:web alias, and the parent registers its participants under the
+          # did:webvh, so the alias finds none of them.
+          ORG_DID=$(fetch_did_from_log "$ORG_PUBLIC_URL")
+          if [ -z "$ORG_DID" ]; then
+            echo "::error::Could not fetch organization-vs DID from ${ORG_PUBLIC_URL}/.well-known/did.jsonl. Is organization-vs deployed?"
+            exit 1
+          fi
+          echo "ORG_VS_DID=${ORG_DID}" >> "$GITHUB_ENV"
+          echo "organization-vs DID: $ORG_DID"
+
+          # A service of this organization joins organization-vs's Corporation. The DID ownership
+          # invariant of the VPR binds each DID to one Corporation, and one Corporation may own
+          # any number of DIDs, so a Corporation per service is neither needed nor correct.
+          resolve_corporation_for_did "$ORG_DID"
+          echo "CORPORATION_ID=${CORPORATION_ID}" >> "$GITHUB_ENV"
+          echo "Corporation: ${CORPORATION_ID}"
+
+      - name: Resolve deployment.yaml placeholders
+        if: inputs.step == 'deploy' || inputs.step == 'all'
+        run: |
+          if [ -z "${CORPORATION_ID:-}" ]; then
+            echo "::error::CORPORATION_ID is not set; the 'deploy' step resolves it from organization-vs."
+            exit 1
+          fi
+          CHILD_VS_NAME="verifier-web-${VS_NAME}"
+          sed -e "s/__NETWORK__/${NETWORK}/g" -e "s/__CHILD_VS_NAME__/${CHILD_VS_NAME}/g" -e "s/__VS_NAME__/${VS_NAME}/g" \
+            -e "s/__CORPORATION_ID__/${CORPORATION_ID}/g" -e "s#__ORG_VS_DID__#${ORG_VS_DID}#g" \
+            verifier-web-vs/deployment.yaml > /tmp/deployment-resolved.yaml
+          echo "CHILD_VS_NAME=${CHILD_VS_NAME}" >> "$GITHUB_ENV"
+          echo "--- Resolved deployment.yaml ---"
+          cat /tmp/deployment-resolved.yaml
+
+      - name: Parse deployment.yaml
+        if: inputs.step == 'deploy' || inputs.step == 'all'
+        run: |
+          CHART_SOURCE=$(yq '.chartSource' /tmp/deployment-resolved.yaml)
+          CHART_VERSION=$(yq '.chartVersion' /tmp/deployment-resolved.yaml)
+          CHART_NAMESPACE="${{ secrets.K8S_NAMESPACE }}"
+          RELEASE_NAME=$(yq '.name' /tmp/deployment-resolved.yaml)
+          INGRESS_HOST=$(yq '.ingress.host' /tmp/deployment-resolved.yaml)
+          echo "CHART_SOURCE=${CHART_SOURCE}" >> "$GITHUB_ENV"
+          echo "CHART_VERSION=${CHART_VERSION}" >> "$GITHUB_ENV"
+          echo "CHART_NAMESPACE=${CHART_NAMESPACE}" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=${RELEASE_NAME}" >> "$GITHUB_ENV"
+          echo "INGRESS_HOST=${INGRESS_HOST}" >> "$GITHUB_ENV"
+
+      - name: Ensure agent secret exists
+        if: inputs.step == 'deploy' || inputs.step == 'all'
+        run: |
+          kubectl create namespace "$CHART_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$CHART_NAMESPACE" get secret verifier-web-vs-secrets > /dev/null 2>&1 || \
+          kubectl -n "$CHART_NAMESPACE" create secret generic verifier-web-vs-secrets \
+            --from-literal=VERIFIER_WEB_VS_AGENT_MNEMONIC="${{ secrets.VERIFIER_WEB_VS_AGENT_MNEMONIC }}"
+
       - name: Deploy VS Agent via Helm
         if: inputs.step == 'deploy' || inputs.step == 'all'
         run: |
           yq 'del(.chartSource, .chartVersion)' /tmp/deployment-resolved.yaml > /tmp/helm-values.yaml
           yq -i '.didcommLabel = env(SERVICE_NAME)' /tmp/helm-values.yaml
-          yq -i '.didcommInvitationImageUrl = env(SERVICE_LOGO_URL)' /tmp/helm-values.yaml
           helm upgrade --install "$RELEASE_NAME" "$CHART_SOURCE" \
             --version "$CHART_VERSION" \
             --namespace "$CHART_NAMESPACE" --create-namespace \
@@ -115,96 +173,136 @@ jobs:
             --wait --timeout 300s
 
       # -----------------------------------------------------------------------
-      # GET-CREDENTIALS: Obtain Service credential + VERIFIER permission
+      # ONBOARD-VERIFIER: self-create VERIFIER participant (OPEN mode)
       # -----------------------------------------------------------------------
       - name: Port-forward child VS Agent
-        if: inputs.step == 'get-credentials' || inputs.step == 'all'
+        if: inputs.step == 'onboard-verifier' || inputs.step == 'all'
         run: |
-          kubectl port-forward -n "$CHART_NAMESPACE" "svc/$RELEASE_NAME" 3002:3000 &
+          RELEASE_NAME="${RELEASE_NAME:-verifier-web-${VS_NAME}}"
+          kubectl port-forward -n "${{ secrets.K8S_NAMESPACE }}" "svc/$RELEASE_NAME" 3002:3000 &
           echo "CHILD_PF_PID=$!" >> "$GITHUB_ENV"
           sleep 5
-          curl -sf http://localhost:3002/v1/agent > /dev/null || {
+          curl -sf http://localhost:3002/v2/agent/health/live > /dev/null || {
             echo "::error::Port-forward to child VS-Agent failed"
             exit 1
           }
 
+      # The Service credential onboarding step validates the flow through the admin API of
+      # organization-vs, so it needs this port-forward.
       - name: Port-forward organization VS Agent
-        if: inputs.step == 'get-credentials' || inputs.step == 'all'
+        if: inputs.step == 'onboard-verifier' || inputs.step == 'all'
         run: |
-          kubectl port-forward -n "$CHART_NAMESPACE" "svc/${VS_NAME}" 3000:3000 &
+          kubectl port-forward -n "${{ secrets.K8S_NAMESPACE }}" "svc/${VS_NAME}" 3000:3000 &
           echo "ORG_PF_PID=$!" >> "$GITHUB_ENV"
           sleep 5
-          curl -sf http://localhost:3000/v1/agent > /dev/null || {
+          curl -sf http://localhost:3000/v2/agent/health/live > /dev/null || {
             echo "::error::Port-forward to organization VS-Agent failed"
             exit 1
           }
 
-      - name: Get Service credential and VERIFIER permission
-        if: inputs.step == 'get-credentials' || inputs.step == 'all'
+      # The agent holds only a VSOperatorAuthorization, so it cannot submit StartParticipantOP
+      # itself; the Corporation operator provisions its Service HOLDER entry, and the agent then
+      # reacts to the chain event and sends the onboarding request ([VSA-VTI-FLOW-OP-NEW]).
+      - name: Provision the Service HOLDER entry
+        if: inputs.step == 'onboard-verifier' || inputs.step == 'all'
         run: |
-          ORG_ADMIN_API="http://localhost:3000"
-          CHILD_ADMIN_API="http://localhost:3002"
+          source common/common.sh
+          set_network_vars "$NETWORK"
+          resolve_corporation "$CORPORATION_ID"
+
+          CHILD_PUBLIC_URL="https://verifier-web-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
+          CHILD_DID=$(fetch_did_from_log "$CHILD_PUBLIC_URL")
+          ECS_SERVICE_SCHEMA_ID=$(find_ecs_schema_id "$ECS_ECOSYSTEM_DID" "ServiceCredential")
+
+          if find_participant_with_vs_operator "$ECS_SERVICE_SCHEMA_ID" "$PP_ROLE_HOLDER" "$CHILD_DID" \
+               | grep -q "$AGENT_ADDR"; then
+            ok "Service HOLDER entry already names $AGENT_ADDR"
+          else
+            ORG_SERVICE_ISSUER_ID=$(find_active_participant \
+              "$ECS_SERVICE_SCHEMA_ID" "$PP_IDX_ROLE_ISSUER" "$ORG_VS_DID")
+            if [ -z "$ORG_SERVICE_ISSUER_ID" ]; then
+              echo "::error::organization-vs holds no active Service ISSUER entry"
+              exit 1
+            fi
+            # HOLDER is the one role whose vs_operator may send TriggerResolver.
+            start_participant_op "$CORPORATION" "$PP_ROLE_HOLDER" "$ORG_SERVICE_ISSUER_ID" \
+              "$CHILD_DID" "$AGENT_ADDR" "$VSOA_HOLDER" > /dev/null
+          fi
+
+      # The delegated Service credential comes from a HOLDER onboarding process against the
+      # parent's Service ISSUER ([VSA-VTI-FLOW-OP-NEW]). The agent starts it on its own at boot;
+      # the applicant sends its own Service claims from its ECS_CLAIMS_SERVICE_* variables, and
+      # this side only validates the request.
+      - name: Validate the Service credential onboarding on organization-vs
+        if: inputs.step == 'onboard-verifier' || inputs.step == 'all'
+        run: |
           source common/common.sh
           set_network_vars "$NETWORK"
 
-          CHILD_DID=$(curl -sf "${CHILD_ADMIN_API}/v1/agent" | jq -r '.publicDid')
-          echo "Child DID: $CHILD_DID"
-
-          # Get Service credential from organization-vs (skip if already linked)
-          CHILD_PUBLIC_URL="https://${INGRESS_HOST}"
-          if has_linked_vp "$CHILD_PUBLIC_URL" "service"; then
-            ok "Service credential already linked — skipping"
-          else
-            SERVICE_VTJSC_OUTPUT=$(discover_ecs_vtjsc "$ECS_TR_PUBLIC_URL" "service")
-            SERVICE_JSC_URL=$(echo "$SERVICE_VTJSC_OUTPUT" | sed -n '1p')
-
-            SERVICE_LOGO_DATA_URI=$(download_logo_data_uri "$SERVICE_LOGO_URL")
-
-            SERVICE_CLAIMS=$(jq -n \
-              --arg id "$CHILD_DID" \
-              --arg name "$SERVICE_NAME" \
-              --arg type "${SERVICE_TYPE:-VerifierService}" \
-              --arg desc "$SERVICE_DESCRIPTION" \
-              --arg logo "$SERVICE_LOGO_DATA_URI" \
-              --argjson age "${SERVICE_MIN_AGE:-0}" \
-              --arg terms "${SERVICE_TERMS:-}" \
-              --arg privacy "${SERVICE_PRIVACY:-}" \
-              '{id: $id, name: $name, type: $type, description: $desc, logo: $logo, minimumAgeRequired: $age, termsAndConditions: $terms, privacyPolicy: $privacy}')
-
-            issue_remote_and_link "$ORG_ADMIN_API" "$CHILD_ADMIN_API" "service" "$SERVICE_JSC_URL" "$CHILD_DID" "$SERVICE_CLAIMS"
-          fi
-
-          # Discover custom schema from organization-vs DID doc
-          ORG_PUBLIC_URL="https://organization-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
-          ORG_DID_DOC=$(curl -sf "${ORG_PUBLIC_URL}/.well-known/did.json")
-
-          CUSTOM_VP_URL=$(echo "$ORG_DID_DOC" | jq -r '
-            .service[] |
-            select(.type == "LinkedVerifiablePresentation") |
-            select(.id | test("organization-jsc-vp|service-jsc-vp") | not) |
-            select(.id | test("jsc-vp")) |
-            .serviceEndpoint' | head -1)
-
-          if [ -z "$CUSTOM_VP_URL" ]; then
-            echo "::error::No custom schema VP found in organization-vs DID doc. Has the trust registry been created?"
+          CHILD_PUBLIC_URL="https://verifier-web-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
+          CHILD_DID=$(fetch_did_from_log "$CHILD_PUBLIC_URL")
+          if [ -z "$CHILD_DID" ]; then
+            echo "::error::Could not read the DID of $CHILD_PUBLIC_URL"
             exit 1
           fi
-          CUSTOM_VP=$(curl -sf "$CUSTOM_VP_URL")
-          CUSTOM_SCHEMA_REF=$(echo "$CUSTOM_VP" | jq -r '.verifiableCredential[0].credentialSubject.jsonSchema."$ref" // empty')
-          CUSTOM_SCHEMA_ID=$(echo "$CUSTOM_SCHEMA_REF" | grep -oE '[0-9]+$')
+
+          # Match on the Service schema, so a finished flow on an older schema
+          # does not end the wait or hide the flow on the current one.
+          ECS_SERVICE_SCHEMA_ID=$(find_ecs_schema_id "$ECS_ECOSYSTEM_DID" "ServiceCredential")
+
+          # Wait for the agent to react to its own StartParticipantOP. Match any
+          # state: the agent drives the flow onward by itself, so a poll for one
+          # transient state waits the full timeout on a fast agent.
+          for _ in $(seq 1 12); do
+            if curl -sf "http://localhost:3000/v2/vt/flows?role=validator&schemaId=${ECS_SERVICE_SCHEMA_ID}" \
+                 | jq -e --arg did "$CHILD_DID" 'any(.items[]; .peerDid == $did)' > /dev/null 2>&1; then
+              break
+            fi
+            sleep 10
+          done
+
+          # A completed onboarding is not an error: these steps are re-run often,
+          # and the validator keeps the finished flow. Skip instead of failing.
+          if has_completed_flow "http://localhost:3000" "$CHILD_DID" "$ECS_SERVICE_SCHEMA_ID"; then
+            ok "Already validated — skipping"
+          elif ! validate_pending_flow "http://localhost:3000" "$CHILD_DID" "$ECS_SERVICE_SCHEMA_ID"; then
+            echo "::error::Could not validate the Service credential onboarding for $CHILD_DID"
+            exit 1
+          fi
+
+      - name: Self-create VERIFIER on organization-vs's example schema
+        if: inputs.step == 'onboard-verifier' || inputs.step == 'all'
+        run: |
+          if [ -z "${CORPORATION_ID:-}" ]; then
+            echo "::error::CORPORATION_ID is not set; the 'deploy' step resolves it from organization-vs."
+            exit 1
+          fi
+          source common/common.sh
+          set_network_vars "$NETWORK"
+          resolve_corporation "$CORPORATION_ID"
+
+          CHILD_DID=$(curl -sf "http://localhost:3002/v2/agent/info" | jq -r '.did')
+          ok "Child DID: $CHILD_DID"
+
+          ORG_PUBLIC_URL="https://organization-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
+          CUSTOM_SCHEMA_ID=$(discover_custom_schema_id "${ORG_PUBLIC_URL}/.well-known/did.json")
+          if [ -z "$CUSTOM_SCHEMA_ID" ]; then
+            echo "::error::Could not discover the 'example' schema from organization-vs's DID document"
+            exit 1
+          fi
           ok "Organization-vs custom schema ID: $CUSTOM_SCHEMA_ID"
 
-          # Self-create VERIFIER permission (verifier_mode=OPEN)
-          if find_active_verifier_perm "$CUSTOM_SCHEMA_ID" "$CHILD_DID" > /dev/null 2>&1; then
-            ok "Active VERIFIER permission already exists — skipping"
+          if EXISTING_PARTICIPANT_ID=$(find_active_participant "$CUSTOM_SCHEMA_ID" "$PP_IDX_ROLE_VERIFIER" "$CHILD_DID"); then
+            ok "Active VERIFIER participant already exists: $EXISTING_PARTICIPANT_ID — skipping"
           else
-            check_balance "$USER_ACC"
-            EFFECTIVE_FROM=$(future_timestamp 15)
-            VERIFIER_PERM=$(submit_tx "create_permission" "permission_id" \
-              veranad tx perm create-perm "$CUSTOM_SCHEMA_ID" verifier "$CHILD_DID" \
-              --effective-from "$EFFECTIVE_FROM")
-            sleep 21
-            ok "VERIFIER permission created: $VERIFIER_PERM"
+            ROOT_PARTICIPANT_ID=$(find_root_participant "$CUSTOM_SCHEMA_ID")
+            if [ -z "$ROOT_PARTICIPANT_ID" ]; then
+              echo "::error::Could not find the root participant for schema $CUSTOM_SCHEMA_ID"
+              exit 1
+            fi
+            VERIFIER_PARTICIPANT_ID=$(self_create_participant "$CORPORATION" "$PP_ROLE_VERIFIER" \
+              "$ROOT_PARTICIPANT_ID" "$CHILD_DID" "$AGENT_ADDR" "$VSOA_VERIFIER")
+            ok "VERIFIER participant created: $VERIFIER_PARTICIPANT_ID"
           fi
 
       # -----------------------------------------------------------------------
@@ -225,18 +323,20 @@ jobs:
         if: inputs.step == 'deploy-web' || inputs.step == 'all'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
-          context: ./verifier-web-vs/verifier-web
+          context: .
+          file: ./verifier-web-vs/verifier-web/Dockerfile
           push: true
           tags: |
             veranalabs/verifier-web:${{ github.sha }}
-            veranalabs/verifier-web:${{ env.CHILD_VS_NAME }}
+            veranalabs/verifier-web:verifier-web-${{ env.VS_NAME }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Deploy Web Verifier
         if: inputs.step == 'deploy-web' || inputs.step == 'all'
         run: |
-          NAMESPACE="${CHART_NAMESPACE}"
+          NAMESPACE="${{ secrets.K8S_NAMESPACE }}"
+          RELEASE_NAME="verifier-web-${VS_NAME}"
           APP_NAME="verifier-web-app-${VS_NAME}"
           IMAGE="veranalabs/verifier-web:${{ github.sha }}"
           PORT="${VERIFIER_PORT:-4003}"
@@ -270,8 +370,6 @@ jobs:
                     env:
                       - name: VS_AGENT_ADMIN_URL
                         value: "http://${RELEASE_NAME}:3000"
-                      - name: ORG_VS_ADMIN_URL
-                        value: "http://${VS_NAME}:3000"
                       - name: ORG_VS_PUBLIC_URL
                         value: "https://organization-vs.${VS_NAME}.demos.${NETWORK}.verana.network"
                       - name: ISSUER_VS_PUBLIC_URL
@@ -324,14 +422,6 @@ jobs:
 
           kubectl rollout status deployment/"${APP_NAME}" -n "$NAMESPACE" --timeout=300s
 
-      - name: Configure VS-Agent EVENTS_BASE_URL
-        if: inputs.step == 'deploy-web' || inputs.step == 'all'
-        run: |
-          APP_NAME="verifier-web-app-${VS_NAME}"
-          WEB_URL="http://${APP_NAME}:${VERIFIER_WEB_PORT:-4003}/webhooks"
-          kubectl set env statefulset/"${RELEASE_NAME}" \
-            -n "$CHART_NAMESPACE" \
-            EVENTS_BASE_URL="$WEB_URL"
 
       # -----------------------------------------------------------------------
       # CLEANUP
@@ -341,6 +431,7 @@ jobs:
         run: |
           [ -n "${CHILD_PF_PID:-}" ] && kill "$CHILD_PF_PID" 2>/dev/null || true
           [ -n "${ORG_PF_PID:-}" ] && kill "$ORG_PF_PID" 2>/dev/null || true
+          true
 
       - name: Summary
         if: always()
@@ -352,6 +443,7 @@ jobs:
           fi
           echo "- **Network:** ${NETWORK:-unknown}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Service:** ${VS_NAME:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Corporation ID:** ${CORPORATION_ID:-unset}" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ inputs.step }}" = "deploy-web" ] || [ "${{ inputs.step }}" = "all" ]; then
             echo "- **Web App:** https://app.verifier-web-vs.${VS_NAME}.demos.${NETWORK}.verana.network" >> "$GITHUB_STEP_SUMMARY"
             echo "- **Web Image:** veranalabs/verifier-web:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"

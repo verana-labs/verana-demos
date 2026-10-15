@@ -1,36 +1,55 @@
 # Verana Demos
 
-Demo ecosystem with five Verifiable Services and an interactive playground, deployed via GitHub Actions to Kubernetes.
+Demo ecosystem with five Verifiable Services and an interactive playground, deployed via GitHub Actions to Kubernetes. Targets **Verana v4** implementation, currently on devnet. It runs vs-agent `v2.0.0-dev.91` against `veranad v0.10.6`.
 
 ## Architecture
 
 ```
-organization-vs          ← Parent organization (ECS credentials, Trust Registry, schema)
-├── issuer-chatbot-vs    ← Issues credentials via DIDComm chatbot
-├── issuer-web-vs        ← Issues credentials via web form + QR code
-├── verifier-chatbot-vs  ← Verifies credentials via DIDComm chatbot
-├── verifier-web-vs      ← Verifies credentials via web page + QR code
-└── playground           ← Interactive tutorial that ties all services together
+ecs-ecosystem            ← Shared ECS authority (verana-deploy, not this repo)
+└── organization-vs      ← Parent organization (ECS credentials, own Ecosystem + schema)
+    ├── issuer-chatbot-vs    ← Issues credentials via DIDComm chatbot
+    ├── issuer-web-vs        ← Issues credentials via web form + QR code
+    ├── verifier-chatbot-vs  ← Verifies credentials via DIDComm chatbot
+    ├── verifier-web-vs      ← Verifies credentials via web page + QR code
+    └── playground           ← Interactive tutorial that ties all services together
 ```
 
-**organization-vs** is the parent: it obtains Organization + Service credentials from the ECS Trust Registry, creates its own Trust Registry with a custom schema, and registers an AnonCreds credential definition.
+**One Corporation for the whole organization.** `organization-vs` owns it; the four child services join it. The DID ownership invariant of the VPR binds each DID to a single Corporation, and it lets one Corporation own any number of DIDs, so a Corporation per service is neither needed nor correct. The `deploy` step of each child workflow resolves the Corporation from organization-vs's DID, so no child carries a `CORPORATION_ID`.
 
-Child services obtain a **Service credential** from organization-vs, then:
-- **Issuers** obtain an ISSUER permission (VP flow) for the organization-vs schema
-- **Verifiers** self-create a VERIFIER permission (OPEN mode)
+**One operator account, one agent account per service.** The Corporation operator (`USER_ACC`, organization-vs's) holds the blanket `OperatorAuthorization` and signs every provisioning transaction. Each service has its own account (`AGENT_ACC`), the `vs_operator` of its Participant entries, which lets its agent send `TriggerResolver` and `CreateOrUpdateParticipantSession` on its own behalf. The chain forbids one account from holding both authorization types, so they must be different accounts.
 
-All services discover the **AnonCreds credential definition** by querying `/resources?resourceType=anonCredsCredDef` on the public endpoint of organization-vs.
+**The agent reacts to chain events.** Scripts no longer drive credential issuance through the admin API. They create the on-chain objects and the Participant entries; the agent notices, publishes its VTJSCs, self-issues what it may, and answers the onboarding processes.
+
+**The applications use the v2 administration API.** vs-agent `v2.0.0-dev.71` removed the v1 API. Every endpoint now lives under `/v2`, a list answers with `{items, nextCursor}`, and `GET /v2/agent/info` reports the DID in a field named `did`. No endpoint creates a bare connection invitation any more. A wallet dials the public DID of the agent instead.
+
+**A chatbot sends an offer or a request on the chat connection.** The two chatbots pass the `connectionId` of the chat, so the agent sends the credential offer or the presentation request on that connection, and the wallet shows it in the same conversation. A chatbot sends no link, and a holder opens no second connection. The two web applications omit `connectionId`, because a web page holds no connection yet. The agent then answers an out of band invitation, and the page shows its `shortUrl` as a QR code.
+
+**Each agent composes its own ECS claims.** The `ECS_CLAIMS_*` variables of a container hold the claims of the credentials that agent will carry ([VSA-VTI-CFG-ENV-ECS]), and the agent sends them on the onboarding request it opens. A validator signs what it receives, so no script builds a claim set any more. A standalone agent reads the organization, persona and service groups; a delegated agent reads only the service group. The agent derives every `*DigestSri` claim from the matching `*Uri` claim, so each URI must be reachable.
+
+**organization-vs** plays two roles:
+
+- a participant of the shared **ecs-ecosystem**, from which it obtains its own Organization and Service credentials. Its Organization credential comes from `ecs-org-issuer`, a third-party issuer — an Ecosystem agent cannot issue its own Ecosystem's credentials, because the chain grants the ECOSYSTEM role no `VSOperatorAuthorization`.
+
+  Its two credentials carry different names on purpose. The Organization credential names the legal entity, "Verana Example Organization". The Service credential names the service, "Verana Example Ecosystem", and that is the name an explorer shows for the Ecosystem this agent controls.
+- the controller of its own **"example"** Ecosystem and credential schema, which the child services onboard against.
+
+**Child services** run in `AGENT_MODE=delegated` against organization-vs. Delegated mode uses the onboarding process (`[VSA-VTI-FLOW-OP-NEW]`), not Direct Issuance, because the ECS Service schema sets `holder_onboarding_mode = ISSUER_ONBOARDING_PROCESS`. The agent holds only a `VSOperatorAuthorization`, so it cannot submit `StartParticipantOP` itself: the workflow provisions its Service HOLDER entry, the agent reacts to that chain event and sends the onboarding request with its own claims, and organization-vs validates it. They then take their role on the "example" schema:
+
+- **Issuers** get a `StartParticipantOP(ISSUER)` against the "example" root. The Corporation operator validates it: the root is organization-vs's ECOSYSTEM participant, and the chain grants that role no `VSOperatorAuthorization`.
+- **Verifiers** get a VERIFIER participant self-created (OPEN mode) — one transaction, no handshake, no validation.
+
+All services discover the **AnonCreds credential definition** by querying `/resources?resourceType=anonCredsCredDef` on the public endpoint of the issuer.
 
 ## Services
 
-| Service | Role | App Port |
-|---------|------|----------|
-| `organization-vs` | Parent org | — |
-| `issuer-chatbot-vs` | Issuer (chatbot) | 4000 |
-| `issuer-web-vs` | Issuer (web) | 4001 |
-| `verifier-chatbot-vs` | Verifier (chatbot) | 4002 |
-| `verifier-web-vs` | Verifier (web) | 4003 |
-| `playground` | Interactive tutorial | 3000 |
+| Service | Role | Agent mode | App Port |
+|---------|------|-----------|----------|
+| `organization-vs` | Parent org, Ecosystem controller | `standalone` | — |
+| `issuer-chatbot-vs` | Issuer (chatbot) | `delegated` | 4000 |
+| `issuer-web-vs` | Issuer (web) | `delegated` | 4001 |
+| `verifier-chatbot-vs` | Verifier (chatbot) | `delegated` | 4002 |
+| `verifier-web-vs` | Verifier (web) | `delegated` | 4003 |
+| `playground` | Interactive tutorial | — | 3000 |
 
 ## Directory Structure
 
@@ -38,19 +57,21 @@ All services discover the **AnonCreds credential definition** by querying `/reso
 <service>/
   config.env            # All configuration for this service
   deployment.yaml       # Helm chart values for K8s deployment
-  ids.env               # Persisted IDs (credential def, schema, etc.)
   schema.json           # (organization-vs only) Custom credential schema
-  data/                 # Claim data for credential issuance
   scripts/
-    setup.sh            # Full local setup (deploy agent, get credentials, etc.)
+    setup.sh            # Full local setup (corporation, agent, participants)
     start.sh            # Start the application (child services only)
   docker/
     docker-compose.yml  # Local dev containers (VS Agent + app)
   <app>/                # Application source (TypeScript, child services only)
     src/
-    Dockerfile
+    Dockerfile          # Built from the repository root, so common/vt-schema is in context
     package.json
     tsconfig.json
+
+common/
+  common.sh             # Shared shell helpers
+  vt-schema/            # Shared schema-discovery module (@verana-demos/vt-schema)
 ```
 
 ## GitHub Actions Workflows
@@ -59,16 +80,20 @@ Workflows are numbered to indicate deployment order. **Run them in order** when 
 
 | # | Workflow | Steps |
 |---|---------|-------|
-| 1 | Deploy Organization VS | `deploy` · `get-ecs-credentials` · `create-trust-registry` · `all` |
-| 2 | Deploy Issuer Chatbot VS | `deploy` · `get-credentials` · `deploy-chatbot` · `all` |
-| 3 | Deploy Verifier Chatbot VS | `deploy` · `get-credentials` · `deploy-chatbot` · `all` |
-| 4 | Deploy Issuer Web VS | `deploy` · `get-credentials` · `deploy-web` · `all` |
-| 5 | Deploy Verifier Web VS | `deploy` · `get-credentials` · `deploy-web` · `all` |
+| 1 | Deploy Organization VS | `bootstrap-corporation` · `deploy` · `validate-ecs-onboarding` · `create-example-ecosystem` · `all` |
+| 2 | Deploy Issuer Chatbot VS | `deploy` · `onboard-issuer` · `deploy-chatbot` · `all` |
+| 3 | Deploy Verifier Chatbot VS | `deploy` · `onboard-verifier` · `deploy-chatbot` · `all` |
+| 4 | Deploy Issuer Web VS | `deploy` · `onboard-issuer` · `deploy-web` · `all` |
+| 5 | Deploy Verifier Web VS | `deploy` · `onboard-verifier` · `deploy-web` · `all` |
 | 6 | Deploy Playground | Build & deploy (single step) |
+
+Only workflow 1 bootstraps a Corporation, and only on a new ecosystem: the agent needs `VERANA_CORPORATION_ID` at boot, but the Corporation exists only once that step has run, so it prints the new id for `organization-vs/config.env`. The children have no such step — their `deploy` resolves the same Corporation from organization-vs's DID.
+
+The `onboard-*` step of a child does three things in order: it provisions the Service HOLDER entry, validates that onboarding on organization-vs with the Service claims, and takes the ISSUER or VERIFIER role on the "example" schema. The agent then publishes its Service credential and sends `TriggerResolver` by itself, so no script asks the chain to evaluate a service.
 
 ### Deployment
 
-1. Create a branch: `vs/testnet-<name>` or `vs/devnet-<name>`
+1. Create a branch: `vs/devnet-<name>`
 2. Edit each service's `config.env` and `deployment.yaml` as needed
 3. Run workflows **in order** from GitHub Actions (manual dispatch)
 
@@ -78,36 +103,58 @@ Workflows are numbered to indicate deployment order. **Run them in order** when 
 - `app.<did-domain>` — Web/chatbot application (child services)
 - `playground.<vsname>.demos.<network>.verana.network` — Playground
 
+No service publishes an admin ingress. The agent classifies every Admin API request on the peer address of its TCP connection and never reads a forwarding header, so an ingress-forwarded request is external and `ADMIN_API_AUTH_MODE=internal` answers it with HTTP 403. The chatbot applications reach the Admin API over the cluster Service, which is why `adminApiTrustedNetworks` names the pod CIDR; the ingress controller runs inside that same CIDR, so publishing an admin ingress would serve the Admin API to the internet without authentication. Use `kubectl port-forward`, which arrives on 127.0.0.1.
+
 ## Local Development
 
 ### 1. Start organization-vs
 
+The ECS Organization credential arrives from `ecs-org-issuer`, which runs in the `verana-deploy` cluster. Port-forward its admin API before you run the script, so step 4 can validate the pending onboarding request:
+
 ```bash
+kubectl port-forward -n vna-devnet-1 svc/ecs-org-issuer 3101:3000
 source organization-vs/config.env
-./organization-vs/scripts/setup.sh
+MNEMONIC="..." AGENT_MNEMONIC="..." ./organization-vs/scripts/setup.sh
 ```
 
 ### 2. Start a child service (e.g., issuer-chatbot-vs)
 
 ```bash
 source issuer-chatbot-vs/config.env
-./issuer-chatbot-vs/scripts/setup.sh
+MNEMONIC="..." AGENT_MNEMONIC="..." ./issuer-chatbot-vs/scripts/setup.sh
 ./issuer-chatbot-vs/scripts/start.sh
 ```
 
+`MNEMONIC` is organization-vs's Corporation operator, the same account the workflow signs with; `AGENT_MNEMONIC` is this service's own agent account. Each `scripts/setup.sh` performs the same steps as its workflow, against the same shared Corporation, so a local run and a CI run produce the same on-chain state.
+
 > **Note:** Only one ngrok tunnel can run at a time on the free plan. For local development with multiple services, deploy organization-vs to K8s first, then point child services to its public URL via `ORG_VS_PUBLIC_URL` and `ORG_VS_ADMIN_URL`.
+
+### Checking a service
+
+The indexer answers whether a service is trusted and lists the ECS credentials it holds:
+
+```bash
+curl -s -X POST https://idx.devnet.verana.network/v4/verifiable-trust/resolve \
+  -H 'Content-Type: application/json' \
+  -d '{"did":"<agent did>","ecsCredentials":true}' | jq
+```
 
 ## Shared Code
 
-- `common/common.sh` — Shared shell helpers (logging, network config, VS Agent API, schema discovery, credential issuance/linking, CLI account setup)
+- `common/common.sh` — Shared shell helpers: logging, network config, funding, transaction submission, group proposals, Corporation creation and grant checks (`ensure_operator_authorization`), Ecosystem / credential schema / root participant creation, `StartParticipantOP` and `SelfCreateParticipant`, participant and schema discovery, `resolve_corporation_for_did`, `build_service_claims`, the onboarding-flow validation calls (`validate_pending_flow` and `set_participant_validated`), and the VTJSC lookup that replaces the removed v1 route (`fetch_vtjsc_credential_id`).
+- `common/vt-schema/` — Shared TypeScript module (`@verana-demos/vt-schema`) used by the four applications to discover the custom schema. v4 publishes a VTJSC as `#vpr-schemas-<schemaId>-vtjsc-vp`, named after the numeric credential schema id, and points at its JSON Schema with `vpr:verana:<chain-id>:cs:<schemaId>`, which the module resolves against the indexer of that same chain. Each application depends on it through `file:../../common/vt-schema`, so their Docker builds take the repository root as context.
 
 ## Playground
 
 The playground (`playground/`) is a Next.js + TailwindCSS single-page application that guides newcomers through the Verifiable Trust ecosystem. It lets users issue and present credentials in real time using the demo services above.
 
 - **Framework:** Next.js (standalone output) + TailwindCSS
-- **API proxies:** Server-side API routes forward requests to internal cluster services (issuer-chatbot, verifier-chatbot, verifier-web)
+- **API proxies:** Server-side API routes forward requests to internal cluster services (issuer-chatbot, verifier-chatbot, verifier-web). The chatbot route answers with the public DID of the agent, because the v2 API creates no invitation
+- **Live network data:** `/api/ecosystem` reads the Ecosystem, the credential schema and the Participant tree from the v4 indexer. `/api/pot/<service>` resolves each service with `POST /v4/verifiable-trust/resolve` and shows its trust status, its Service and Organization credential claims, and its Participant roles. The standalone v1 resolver is gone
 - **Issuer Web:** Opens in a new tab (the user fills a form, then scans the QR code generated on that page)
 - **Deployment:** Workflow #6 builds a Docker image and deploys it to the same namespace as the other services
 
-See [`spec-playground.md`](spec-playground.md) for the full specification.
+## Related
+
+- [verana-deploy](https://github.com/verana-labs/verana-deploy) — the shared `ecs-ecosystem` and `ecs-org-issuer` deployments these demos depend on
+- [vs-agent](https://github.com/verana-labs/vs-agent) — the agent every service runs

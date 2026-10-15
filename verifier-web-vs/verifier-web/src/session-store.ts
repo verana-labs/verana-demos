@@ -3,14 +3,15 @@ import crypto from "crypto";
 export interface Session {
   sessionId: string;
   proofExchangeId: string;
-  status: "pending" | "verified";
+  status: "pending" | "verified" | "error";
   attributes: Record<string, string>;
+  errorMessage?: string;
   createdAt: number;
 }
 
 export class SessionStore {
   private sessions = new Map<string, Session>();
-  // Map proofExchangeId → sessionId for webhook lookups
+  // Map proofExchangeId → sessionId for event lookups
   private proofExIndex = new Map<string, string>();
 
   createSession(proofExchangeId: string): Session {
@@ -45,6 +46,14 @@ export class SessionStore {
     if (session) {
       session.status = "verified";
       session.attributes = attributes;
+    }
+  }
+
+  markError(sessionId: string, errorMessage: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.status = "error";
+      session.errorMessage = errorMessage;
     }
   }
 

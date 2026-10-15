@@ -1,0 +1,9 @@
+# Keep the build context small: it is the repository root, but a build needs only the
+# application being built and the shared module.
+**/node_modules
+**/dist
+.git
+.github
+playground
+**/data
+*.md

@@ -9,6 +9,7 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
+    "@verana-demos/vt-schema": "file:../../common/vt-schema",
     "express": "^4.21.0",
     "qrcode": "^1.5.4"
   },

@@ -9,6 +9,10 @@ export class Chatbot {
   private schema: SchemaInfo;
   private config: Config;
 
+  // The exchange events name only the exchange. This map gives back the chat
+  // connection that asked for the presentation.
+  private chatByProofExchange = new Map<string, string>();
+
   constructor(
     client: VsAgentClient,
     store: SessionStore,
@@ -21,14 +25,11 @@ export class Chatbot {
     this.config = config;
   }
 
-  async sendReceipts(connectionId: string, messageId: string): Promise<void> {
-    await this.client.sendReceipts(connectionId, messageId);
-  }
-
   private menuTitle(): string {
     return `${this.config.serviceName} Verifier`;
   }
 
+  // The agent refuses a menu that has no option, so every state offers one.
   private menuForState(state: SessionState): ContextualMenu {
     const title = this.menuTitle();
     switch (state) {
@@ -36,27 +37,49 @@ export class Chatbot {
         return {
           title,
           description: "Ready to verify",
-          options: [{ id: "verify", title: "Verify my credential" }],
+          options: [
+            {
+              name: "verify",
+              title: "Verify my credential",
+              description: "Present your credential",
+            },
+          ],
         };
       case SessionState.REQUEST_PROOF:
         return {
           title,
           description: "Waiting for credential presentation",
-          options: [{ id: "abort", title: "Cancel" }],
+          options: [
+            {
+              name: "abort",
+              title: "Cancel",
+              description: "Stop the verification",
+            },
+          ],
         };
       case SessionState.DONE:
         return {
           title,
           description: "Verification complete",
           options: [
-            { id: "new_presentation", title: "New presentation" },
+            {
+              name: "new_presentation",
+              title: "New presentation",
+              description: "Verify another credential",
+            },
           ],
         };
       default:
         return {
           title,
           description: "Welcome",
-          options: [],
+          options: [
+            {
+              name: "verify",
+              title: "Verify my credential",
+              description: "Present your credential",
+            },
+          ],
         };
     }
   }
@@ -124,6 +147,16 @@ export class Chatbot {
         console.warn(`Unknown menu action: ${menuId}`);
         break;
     }
+  }
+
+  /**
+   * Give back the chat connection of a presentation exchange, and forget the
+   * exchange. Each exchange reports a result once.
+   */
+  takeProofConnection(proofExchangeId: string): string | undefined {
+    const connectionId = this.chatByProofExchange.get(proofExchangeId);
+    if (connectionId) this.chatByProofExchange.delete(proofExchangeId);
+    return connectionId;
   }
 
   async onProofSubmit(
@@ -201,30 +234,33 @@ export class Chatbot {
 
   private async sendProofRequest(connectionId: string): Promise<void> {
     try {
+      const credentialDefinitionId = this.schema.credentialDefinitionId;
+      if (!credentialDefinitionId) {
+        throw new Error(
+          "No credential definition to request. Set ISSUER_VS_PUBLIC_URL."
+        );
+      }
+
       const attributeNames = this.schema.attributes.map((a) => a.name);
 
       console.log(
         `Sending proof request to ${connectionId} for attributes: ${attributeNames.join(", ")}`
       );
 
-      await this.client.sendProofRequest({
-        connectionId,
-        requestedProofItems: [
+      // The request goes out on the chat connection, so the wallet shows it in
+      // this conversation. The map holds the chat connection, because an event
+      // carries the exchange id only.
+      const request = await this.client.createPresentationRequest({
+        requestedCredentials: [
           {
-            id: crypto.randomUUID(),
-            credentialDefinitionId: this.schema.credentialDefinitionId,
-            type: "verifiable-credential",
+            credentialDefinitionId,
             attributes: attributeNames,
           },
         ],
-        contextualMenu: this.menuForState(SessionState.REQUEST_PROOF),
-      });
-
-      await this.sendText(
         connectionId,
-        "I've sent a presentation request to your wallet. Please present your credential.",
-        SessionState.REQUEST_PROOF
-      );
+        autoAccept: true,
+      });
+      this.chatByProofExchange.set(request.proofExchangeId, connectionId);
     } catch (error) {
       console.error(
         `Failed to send proof request to ${connectionId}:`,

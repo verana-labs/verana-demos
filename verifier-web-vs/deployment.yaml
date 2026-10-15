@@ -1,9 +1,10 @@
-# Verifier Web VS Agent deployment — Helm chart values
+# Verifier Web VS Agent deployment — Helm chart values (Verana v0.10.1+)
 #
-# Network and service name are derived from the branch name.
-# The workflow substitutes __NETWORK__, __VS_NAME__ and __CHILD_VS_NAME__ placeholders at deploy time.
+# Network and service name are derived from the branch name. The workflow
+# substitutes __NETWORK__, __VS_NAME__, __CHILD_VS_NAME__, __CORPORATION_ID__
+# and __ORG_VS_DID__ placeholders at deploy time.
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v1.11.0
+chartVersion: v2.0.0-dev.91
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network
@@ -13,8 +14,35 @@ replicas: 1
 
 adminPort: 3000
 didcommPort: 3001
-eventsBaseUrl: "https://verifier-web-vs.__VS_NAME__.demos.__NETWORK__.verana.network"
 publicDidMethod: "webvh"
+enablePublicApiSwagger: true
+
+# One URL receives every event, as one POST per event carrying the Events API
+# envelope. The web app serves it at /events — see verifier-web-vs/verifier-web/src/routes.ts.
+eventsWebhookUrl: "http://verifier-web-app-__VS_NAME__:4003/events"
+
+# The agent classifies every Admin API request on the peer address of its TCP
+# connection, and it never reads a forwarding header. The web app reaches this
+# admin API through the cluster Service, so the pod CIDR is trusted, and a
+# kubectl port-forward arrives on 127.0.0.1.
+#
+# This is also why the deployment publishes no admin ingress: the ingress
+# controller runs inside the same pod CIDR, so an admin ingress on the admin
+# port would serve the internet without authentication.
+adminApiAuthMode: "internal"
+adminApiTrustedNetworks: "127.0.0.0/8,::1/128,10.2.0.0/16"
+
+# Verana network
+veranaRpcEndpointUrl: "https://rpc.__NETWORK__.verana.network"
+veranaIndexerBaseUrl: "https://idx.__NETWORK__.verana.network"
+veranaChainId: "vna-__NETWORK__-1"
+# Resolved by the deploy step from organization-vs's DID.
+veranaCorporationId: "__CORPORATION_ID__"
+
+agentMode: "delegated"
+# organization-vs's own DID — this agent requests its Service credential
+# from it over DIDComm (EcsBootstrapService.runDelegated()).
+delegatedParentVsDid: "__ORG_VS_DID__"
 
 resources:
   requests:
@@ -36,12 +64,37 @@ ingress:
     host: ""
 
 extraEnv:
-  - name: ENABLE_PUBLIC_API_SWAGGER
-    value: "true"
+  # The agent accepts a level name only: trace, debug, info, warn, error or off.
   - name: AGENT_LOG_LEVEL
-    value: "3"
+    value: "debug"
+  # The agent defaults to 1uvna per gas, 400 times the chain minimum of
+  # 0.0025uvna. The Corporation pays these fees through the fee grants.
+  - name: VERANA_GAS_PRICE
+    value: "0.01uvna"
   - name: USE_CORS
     value: "true"
+  - name: VERANA_ACCOUNT_MNEMONIC
+    valueFrom:
+      secretKeyRef:
+        name: verifier-web-vs-secrets
+        key: VERIFIER_WEB_VS_AGENT_MNEMONIC
+  # ECS credential claims [VSA-VTI-CFG-ENV-ECS]. A delegated agent reads only
+  # the service group: it sends these claims on the onboarding request it opens
+  # with organization-vs, which validates them and issues the credential.
+  - name: ECS_CLAIMS_SERVICE_NAME
+    value: "Example Web Verifier"
+  - name: ECS_CLAIMS_SERVICE_TYPE
+    value: "WEB_PORTAL"
+  - name: ECS_CLAIMS_SERVICE_DESCRIPTION
+    value: "Web credential verifier for the Verana demo ecosystem"
+  - name: ECS_CLAIMS_SERVICE_LOGO_URI
+    value: "https://verana.io/logo.svg"
+  - name: ECS_CLAIMS_SERVICE_MINIMUM_AGE_REQUIRED
+    value: "18"
+  - name: ECS_CLAIMS_SERVICE_TERMS_AND_CONDITIONS_URI
+    value: "https://verifier-web-vs.__VS_NAME__.demos.__NETWORK__.verana.network/vt/default/terms.html"
+  - name: ECS_CLAIMS_SERVICE_PRIVACY_POLICY_URI
+    value: "https://verifier-web-vs.__VS_NAME__.demos.__NETWORK__.verana.network/vt/default/privacy.html"
 
 storage:
   size: 1Gi
