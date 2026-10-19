@@ -24,11 +24,19 @@ import { config } from "./config";
 
 // Creates a connection invitation on the issuer chatbot. The QR code carries
 // its short URL, and the chatbot starts the conversation once the wallet
-// connects.
+// connects. The session id is the id of the invitation record.
 async function fetchIssuerChatbotInvitation() {
   const res = await fetch("/api/issuer-chatbot/invitation", { method: "POST" });
   if (!res.ok) throw new Error("Failed to create the chatbot invitation");
-  return (await res.json()) as { invitationUrl: string };
+  return (await res.json()) as { sessionId: string; invitationUrl: string };
+}
+
+// The issuer chatbot reports no issuance to the page: the user follows the
+// conversation in the wallet. The card stops once the wallet connects.
+async function pollIssuerChatbotConnection(invitationId: string) {
+  const res = await fetch(`/api/issuer-chatbot/invitation/${invitationId}`);
+  if (!res.ok) throw new Error("Poll failed");
+  return (await res.json()) as { status: string };
 }
 
 async function fetchVerifierWebInvitation() {
@@ -254,6 +262,8 @@ export default function PlaygroundPage() {
                 "Your credential is stored in your wallet",
               ]}
               fetchInvitation={() => fetchIssuerChatbotInvitation()}
+              pollResult={(sessionId) => pollIssuerChatbotConnection(sessionId)}
+              doneOnConnect
               resultLabel="Connected! Follow the chat in Hologram."
             />
 
@@ -269,6 +279,7 @@ export default function PlaygroundPage() {
               ]}
               fetchInvitation={() => fetchVerifierChatbotSession()}
               pollResult={(sessionId) => pollVerifierChatbotResult(sessionId)}
+              connectedLabel="Connected! Approve the proof request in Hologram."
               resultLabel="Credential Verified!"
             />
           </div>

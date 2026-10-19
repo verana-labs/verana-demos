@@ -5,7 +5,9 @@ export const dynamic = "force-dynamic";
 // Creates a single-use connection invitation on the agent of the issuer
 // chatbot, with no credential offer in it: the chatbot starts the conversation
 // once the wallet connects. The QR code carries the short URL of the
-// invitation. A wallet that holds a connection to the agent already reuses it.
+// invitation, and the page polls the invitation id (see ./[invitationId]) to
+// say "connected". A wallet that holds a connection to the agent already
+// reuses it.
 export async function POST() {
   const url = process.env.ISSUER_CHATBOT_VS_ADMIN_URL;
   if (!url) {
@@ -27,13 +29,13 @@ export async function POST() {
     );
   }
 
-  const data = (await res.json()) as { shortUrl?: string };
-  if (!data.shortUrl) {
+  const data = (await res.json()) as { id?: string; shortUrl?: string };
+  if (!data.id || !data.shortUrl) {
     return NextResponse.json(
       { error: "The agent returned no invitation URL" },
       { status: 502 },
     );
   }
 
-  return NextResponse.json({ invitationUrl: data.shortUrl });
+  return NextResponse.json({ sessionId: data.id, invitationUrl: data.shortUrl });
 }

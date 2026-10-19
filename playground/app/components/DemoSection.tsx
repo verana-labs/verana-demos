@@ -12,7 +12,14 @@ import {
 import QRCodeLib from "qrcode";
 import ServiceTrustCard from "./ServiceTrustCard";
 
-type DemoState = "idle" | "loading" | "qr" | "polling" | "success" | "error";
+type DemoState =
+  | "idle"
+  | "loading"
+  | "qr"
+  | "polling"
+  | "connected"
+  | "success"
+  | "error";
 
 interface DemoSectionProps {
   title: string;
@@ -32,6 +39,16 @@ interface DemoSectionProps {
     error?: string;
   }>;
   resultLabel?: string;
+  /**
+   * Shown once the wallet accepts the invitation (poll status `connected`),
+   * while the card waits for the result.
+   */
+  connectedLabel?: string;
+  /**
+   * The card has no later result: a `connected` poll status ends it with
+   * `resultLabel`.
+   */
+  doneOnConnect?: boolean;
   externalUrl?: string;
 }
 
@@ -43,6 +60,8 @@ export default function DemoSection({
   fetchInvitation,
   pollResult,
   resultLabel = "Result",
+  connectedLabel = "Connected! Continue in your wallet.",
+  doneOnConnect = false,
   externalUrl,
 }: DemoSectionProps) {
   const [state, setState] = useState<DemoState>("idle");
@@ -81,7 +100,8 @@ export default function DemoSection({
   }, [fetchInvitation, pollResult]);
 
   useEffect(() => {
-    if (state !== "polling" || !sessionId || !pollResult) return;
+    if ((state !== "polling" && state !== "connected") || !sessionId || !pollResult)
+      return;
 
     const interval = setInterval(async () => {
       try {
@@ -89,6 +109,8 @@ export default function DemoSection({
         if (res.status === "issued" || res.status === "verified") {
           setClaims(res.claims || {});
           setState("success");
+        } else if (res.status === "connected") {
+          setState(doneOnConnect ? "success" : "connected");
         } else if (res.status === "error") {
           setErrorMsg(res.error || "Verification failed");
           setState("error");
@@ -99,7 +121,7 @@ export default function DemoSection({
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [state, sessionId, pollResult]);
+  }, [state, sessionId, pollResult, doneOnConnect]);
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
@@ -174,6 +196,25 @@ export default function DemoSection({
                   Waiting for response...
                 </div>
               )}
+              <button
+                onClick={reset}
+                className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {state === "connected" && (
+            <div className="flex flex-col items-center gap-3 py-4">
+              <CheckCircle2 className="w-12 h-12 text-violet-500" />
+              <p className="font-semibold text-gray-900 text-center">
+                {connectedLabel}
+              </p>
+              <div className="flex items-center gap-2 text-sm text-gray-500">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Waiting for the result...
+              </div>
               <button
                 onClick={reset}
                 className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
