@@ -2,9 +2,11 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-// The v2 API mints no connection invitation: a wallet dials the public DID of
-// the agent. The page therefore shows that DID, and the QR code carries it.
-export async function GET() {
+// Creates a single-use connection invitation on the agent of the issuer
+// chatbot, with no credential offer in it: the chatbot starts the conversation
+// once the wallet connects. The QR code carries the short URL of the
+// invitation. A wallet that holds a connection to the agent already reuses it.
+export async function POST() {
   const url = process.env.ISSUER_CHATBOT_VS_ADMIN_URL;
   if (!url) {
     return NextResponse.json(
@@ -13,7 +15,11 @@ export async function GET() {
     );
   }
 
-  const res = await fetch(`${url}/v2/agent/info`);
+  const res = await fetch(`${url}/v2/didcomm/invitations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
   if (!res.ok) {
     return NextResponse.json(
       { error: `Upstream ${res.status}` },
@@ -21,13 +27,13 @@ export async function GET() {
     );
   }
 
-  const data = await res.json();
-  if (!data.did) {
+  const data = (await res.json()) as { shortUrl?: string };
+  if (!data.shortUrl) {
     return NextResponse.json(
-      { error: "The agent has no public DID yet" },
+      { error: "The agent returned no invitation URL" },
       { status: 502 },
     );
   }
 
-  return NextResponse.json({ did: data.did as string });
+  return NextResponse.json({ invitationUrl: data.shortUrl });
 }

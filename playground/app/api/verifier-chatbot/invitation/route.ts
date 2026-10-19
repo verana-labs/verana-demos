@@ -2,10 +2,9 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-// Creates a playground verification session on the verifier-chatbot app: the
-// public DID of its agent plus a session id the page can poll for the verified
-// attributes (see /api/verifier-chatbot/result/[sessionId]). The v2 API mints
-// no connection invitation, so a wallet dials that DID.
+// Creates a playground verification session on the verifier-chatbot app: a
+// connection invitation URL for the QR code plus a session id the page can poll
+// for the verified attributes (see /api/verifier-chatbot/result/[sessionId]).
 export async function POST() {
   const url = process.env.VERIFIER_CHATBOT_URL;
   if (!url) {

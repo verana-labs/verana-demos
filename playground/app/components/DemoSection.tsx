@@ -25,8 +25,6 @@ interface DemoSectionProps {
     qrDataUrl?: string;
     invitationUrl?: string;
     url?: string;
-    /** Public DID of a chatbot agent, which a wallet dials directly. */
-    agentDid?: string;
   }>;
   pollResult?: (sessionId: string) => Promise<{
     status: string;
@@ -67,9 +65,7 @@ export default function DemoSection({
     try {
       const inv = await fetchInvitation();
 
-      // A chatbot has no invitation: the QR code carries the public DID of its
-      // agent, and the wallet dials that DID.
-      const qrPayload = inv.invitationUrl || inv.url || inv.agentDid || "";
+      const qrPayload = inv.invitationUrl || inv.url || "";
       let qr = inv.qrDataUrl || "";
       if (!qr && qrPayload) {
         qr = await QRCodeLib.toDataURL(qrPayload, { width: 280, margin: 2 });

@@ -4,6 +4,8 @@ export type PlaygroundStatus = "pending" | "connected" | "verified";
 
 export interface PlaygroundSession {
   sessionId: string;
+  /** The invitation record behind the QR code of this session. */
+  invitationId: string;
   status: PlaygroundStatus;
   connectionId?: string;
   attributes: Record<string, string>;
@@ -16,26 +18,27 @@ const SESSION_TTL_MS = 15 * 60 * 1000;
  * In-memory correlation between playground QR sessions and DIDComm
  * connections, so the playground page can show the verified attributes.
  *
- * The VS-Agent connection-invitation API returns only the invitation URL
- * (no out-of-band record id), while connection events carry the OOB record
- * id — so an exact QR-to-connection mapping is not possible from here.
- * Instead, a completed connection claims the oldest pending playground
- * session still inside the TTL window (FIFO). Demo-grade: two visitors
- * generating QR codes at the same moment could in theory cross-claim.
+ * Each session owns one single-use invitation. The agent names that invitation
+ * on the connection it produces (`invitationId`), and on the acceptance of a
+ * connection that the wallet held already. Both lead to the same session, so
+ * two visitors that scan at the same moment never cross-claim.
  */
 export class PlaygroundSessionStore {
   private sessions = new Map<string, PlaygroundSession>();
+  private byInvitation = new Map<string, string>();
   private byConnection = new Map<string, string>();
 
-  createSession(): PlaygroundSession {
+  createSession(invitationId: string): PlaygroundSession {
     this.cleanup();
     const session: PlaygroundSession = {
       sessionId: randomUUID(),
+      invitationId,
       status: "pending",
       attributes: {},
       createdAt: Date.now(),
     };
     this.sessions.set(session.sessionId, session);
+    this.byInvitation.set(invitationId, session.sessionId);
     return session;
   }
 
@@ -44,23 +47,24 @@ export class PlaygroundSessionStore {
   }
 
   /**
-   * Attach a newly completed connection to the oldest pending session.
-   * Idempotent per connection: repeated events return the same session.
+   * Attach a connection to the session of the invitation it came from.
+   * Idempotent: the connection event and the invitation event both call it.
+   * A connection without a session of this store (a wallet that dialled the
+   * public DID, for example) returns undefined.
    */
-  claimNextPending(connectionId: string): PlaygroundSession | undefined {
-    const existing = this.byConnection.get(connectionId);
-    if (existing) return this.sessions.get(existing);
+  claimByInvitation(
+    invitationId: string,
+    connectionId: string
+  ): PlaygroundSession | undefined {
+    const sessionId = this.byInvitation.get(invitationId);
+    const session = sessionId ? this.sessions.get(sessionId) : undefined;
+    if (!session) return undefined;
 
-    this.cleanup();
-    const pending = [...this.sessions.values()]
-      .filter((s) => s.status === "pending")
-      .sort((a, b) => a.createdAt - b.createdAt)[0];
-    if (!pending) return undefined;
-
-    pending.status = "connected";
-    pending.connectionId = connectionId;
-    this.byConnection.set(connectionId, pending.sessionId);
-    return pending;
+    if (session.status === "pending") session.status = "connected";
+    // A previous session of a reused connection no longer receives its result.
+    session.connectionId = connectionId;
+    this.byConnection.set(connectionId, session.sessionId);
+    return session;
   }
 
   markVerified(
@@ -81,7 +85,11 @@ export class PlaygroundSessionStore {
     const cutoff = Date.now() - SESSION_TTL_MS;
     for (const [sessionId, session] of this.sessions) {
       if (session.createdAt < cutoff) {
-        if (session.connectionId) {
+        this.byInvitation.delete(session.invitationId);
+        if (
+          session.connectionId &&
+          this.byConnection.get(session.connectionId) === sessionId
+        ) {
           this.byConnection.delete(session.connectionId);
         }
         this.sessions.delete(sessionId);
