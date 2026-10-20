@@ -124,12 +124,15 @@ export class VsAgentClient {
    * presentation request in it. It is single-use. A wallet that already holds
    * a connection to the agent reuses that connection instead of opening a new
    * one, and the agent reports it with `didcomm.invitations.state-updated`.
+   *
+   * The agent mints a DIDComm v2 invitation when didcommVersion is absent. The
+   * holder wallet (Hologram) speaks DIDComm v1, so the chatbot asks for v1.
    */
   async createInvitation(): Promise<CreateInvitationResponse> {
     return this.request<CreateInvitationResponse>(
       "POST",
       "/v2/didcomm/invitations",
-      {}
+      { didcommVersion: "v1" }
     );
   }
 

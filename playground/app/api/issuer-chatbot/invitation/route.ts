@@ -17,10 +17,12 @@ export async function POST() {
     );
   }
 
+  // The agent mints a DIDComm v2 invitation when didcommVersion is absent. The
+  // holder wallet (Hologram) speaks DIDComm v1, so the page asks for v1.
   const res = await fetch(`${url}/v2/didcomm/invitations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: "{}",
+    body: JSON.stringify({ didcommVersion: "v1" }),
   });
   if (!res.ok) {
     return NextResponse.json(
