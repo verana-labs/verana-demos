@@ -57,7 +57,7 @@ async function fetchVerifierChatbotSession() {
     method: "POST",
   });
   if (!res.ok) throw new Error("Failed to create verification session");
-  return (await res.json()) as { sessionId: string; invitationUrl: string };
+  return (await res.json()) as { sessionId: string; agentDid: string };
 }
 
 // The verifier services report the presented attributes under `attributes`;

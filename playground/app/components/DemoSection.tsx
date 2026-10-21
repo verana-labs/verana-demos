@@ -32,6 +32,8 @@ interface DemoSectionProps {
     qrDataUrl?: string;
     invitationUrl?: string;
     url?: string;
+    /** Public DID of a chatbot agent, which a wallet dials directly. */
+    agentDid?: string;
   }>;
   pollResult?: (sessionId: string) => Promise<{
     status: string;
