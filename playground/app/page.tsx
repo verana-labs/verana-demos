@@ -22,13 +22,21 @@ import { config } from "./config";
 /*  API helpers                                                        */
 /* ------------------------------------------------------------------ */
 
-// A chatbot has no invitation to fetch any more: the v2 API mints none, and a
-// wallet dials the public DID of the agent. The QR code carries that DID.
-async function fetchChatbotDid(endpoint: string) {
-  const res = await fetch(endpoint);
-  if (!res.ok) throw new Error(`Failed to fetch the DID of the chatbot`);
-  const data = await res.json();
-  return { url: data.did as string };
+// Creates a connection invitation on the issuer chatbot. The QR code carries
+// its short URL, and the chatbot starts the conversation once the wallet
+// connects. The session id is the id of the invitation record.
+async function fetchIssuerChatbotInvitation() {
+  const res = await fetch("/api/issuer-chatbot/invitation", { method: "POST" });
+  if (!res.ok) throw new Error("Failed to create the chatbot invitation");
+  return (await res.json()) as { sessionId: string; invitationUrl: string };
+}
+
+// The issuer chatbot reports no issuance to the page: the user follows the
+// conversation in the wallet. The card stops once the wallet connects.
+async function pollIssuerChatbotConnection(invitationId: string) {
+  const res = await fetch(`/api/issuer-chatbot/invitation/${invitationId}`);
+  if (!res.ok) throw new Error("Poll failed");
+  return (await res.json()) as { status: string };
 }
 
 async function fetchVerifierWebInvitation() {
@@ -41,9 +49,9 @@ async function fetchVerifierWebInvitation() {
   };
 }
 
-// Creates a playground session on the verifier chatbot: the public DID of its
-// agent plus a session id to poll for the verified attributes. The v2 API mints
-// no invitation, so the wallet dials that DID.
+// Creates a playground session on the verifier chatbot: a connection
+// invitation for the QR code plus a session id to poll for the verified
+// attributes.
 async function fetchVerifierChatbotSession() {
   const res = await fetch("/api/verifier-chatbot/invitation", {
     method: "POST",
@@ -253,9 +261,9 @@ export default function PlaygroundPage() {
                 "Follow the chatbot — it will ask for your details",
                 "Your credential is stored in your wallet",
               ]}
-              fetchInvitation={() =>
-                fetchChatbotDid("/api/issuer-chatbot/invitation")
-              }
+              fetchInvitation={() => fetchIssuerChatbotInvitation()}
+              pollResult={(sessionId) => pollIssuerChatbotConnection(sessionId)}
+              doneOnConnect
               resultLabel="Connected! Follow the chat in Hologram."
             />
 
@@ -271,6 +279,7 @@ export default function PlaygroundPage() {
               ]}
               fetchInvitation={() => fetchVerifierChatbotSession()}
               pollResult={(sessionId) => pollVerifierChatbotResult(sessionId)}
+              connectedLabel="Connected! Approve the proof request in Hologram."
               resultLabel="Credential Verified!"
             />
           </div>

@@ -53,7 +53,21 @@ interface CredentialExchangeRecord {
   [key: string]: unknown;
 }
 
+/**
+ * `didcomm.invitations.state-updated` — the invitation record plus
+ * previousState. Each acceptance names the connection it produced, or the
+ * connection the wallet held already (`reused`).
+ */
+interface InvitationRecord {
+  id: string;
+  state: string;
+  previousState: string | null;
+  acceptances: { connectionId: string; reused: boolean; acceptedAt: string }[];
+  [key: string]: unknown;
+}
+
 const CONNECTION_STATE_UPDATED = "didcomm.connections.state-updated";
+const INVITATION_STATE_UPDATED = "didcomm.invitations.state-updated";
 const MESSAGE_RECEIVED = "didcomm.basic-messages.message-received";
 const MENU_PERFORM_RECEIVED = "didcomm.action-menu.perform-received";
 const CREDENTIAL_EXCHANGE_STATE_UPDATED =
@@ -91,6 +105,22 @@ async function handleEvent(
       const record = event.data as unknown as ConnectionRecord;
       if (record.state === "completed") {
         await chatbot.onNewConnection(record.id);
+      }
+      return;
+    }
+
+    case INVITATION_STATE_UPDATED: {
+      // A wallet that scans the playground QR code while it already holds a
+      // connection to this agent reuses that connection, and no connection
+      // event follows. Start the conversation again on it. A new connection
+      // reports itself above.
+      const invitation = event.data as unknown as InvitationRecord;
+      const acceptance = invitation.acceptances?.at(-1);
+      if (acceptance?.reused) {
+        console.log(
+          `Connection ${acceptance.connectionId} reused for invitation ${invitation.id}`
+        );
+        await chatbot.onNewConnection(acceptance.connectionId);
       }
       return;
     }

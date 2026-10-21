@@ -19,6 +19,21 @@ interface ConnectionRecord {
   id: string;
   state: string;
   previousState: string | null;
+  /** The invitation record the connection came from, or null. */
+  invitationId: string | null;
+  [key: string]: unknown;
+}
+
+/**
+ * `didcomm.invitations.state-updated` — the invitation record plus
+ * previousState. Each acceptance names the connection it produced, or the
+ * connection the wallet held already (`reused`).
+ */
+interface InvitationRecord {
+  id: string;
+  state: string;
+  previousState: string | null;
+  acceptances: { connectionId: string; reused: boolean; acceptedAt: string }[];
   [key: string]: unknown;
 }
 
@@ -64,6 +79,7 @@ const CONNECTION_STATE_UPDATED = "didcomm.connections.state-updated";
 const MESSAGE_RECEIVED = "didcomm.basic-messages.message-received";
 const MENU_PERFORM_RECEIVED = "didcomm.action-menu.perform-received";
 const PRESENTATION_STATE_UPDATED = "didcomm.presentations.state-updated";
+const INVITATION_STATE_UPDATED = "didcomm.invitations.state-updated";
 
 export function createWebhookRouter(
   chatbot: Chatbot,
@@ -72,18 +88,17 @@ export function createWebhookRouter(
 ): Router {
   const router = Router();
 
-  // Playground: create a QR session (agent public DID + pollable session id).
-  // No v2 route mints a bare connection invitation, so the caller shows the
-  // public DID of the agent and the wallet dials that DID itself.
+  // Playground: create a QR session. The session owns a single-use connection
+  // invitation; the QR code carries its short URL, and the page polls the
+  // session id for the verified attributes.
   router.post("/api/invitation", async (_req: Request, res: Response) => {
     try {
-      const { did } = await client.getAgent();
-      if (!did) {
-        res.status(503).json({ error: "The agent has no public DID yet" });
-        return;
-      }
-      const session = playground.createSession();
-      res.json({ sessionId: session.sessionId, agentDid: did });
+      const invitation = await client.createInvitation();
+      const session = playground.createSession(invitation.id);
+      res.json({
+        sessionId: session.sessionId,
+        invitationUrl: invitation.shortUrl,
+      });
     } catch (error) {
       console.error("Failed to create playground session:", error);
       res.status(500).json({ error: "Failed to create session" });
@@ -134,13 +149,26 @@ async function handleEvent(
     case CONNECTION_STATE_UPDATED: {
       const record = event.data as unknown as ConnectionRecord;
       if (record.state !== "completed") return;
-      const claimed = playground.claimNextPending(record.id);
-      if (claimed) {
-        console.log(
-          `Connection ${record.id} claimed playground session ${claimed.sessionId}`
-        );
+      if (record.invitationId) {
+        claimSession(playground, record.invitationId, record.id);
       }
       await chatbot.onNewConnection(record.id);
+      return;
+    }
+
+    case INVITATION_STATE_UPDATED: {
+      // A new connection also reports itself above, so only a reused one
+      // needs the conversation started here.
+      const invitation = event.data as unknown as InvitationRecord;
+      const acceptance = invitation.acceptances?.at(-1);
+      if (!acceptance) return;
+      claimSession(playground, invitation.id, acceptance.connectionId);
+      if (acceptance.reused) {
+        console.log(
+          `Connection ${acceptance.connectionId} reused for invitation ${invitation.id}`
+        );
+        await chatbot.onNewConnection(acceptance.connectionId);
+      }
       return;
     }
 
@@ -195,6 +223,19 @@ async function handleEvent(
       // Receipts, profile disclosure, credential exchanges and indexer
       // notifications need no action from this chatbot.
       return;
+  }
+}
+
+function claimSession(
+  playground: PlaygroundSessionStore,
+  invitationId: string,
+  connectionId: string
+): void {
+  const claimed = playground.claimByInvitation(invitationId, connectionId);
+  if (claimed) {
+    console.log(
+      `Connection ${connectionId} claimed playground session ${claimed.sessionId}`
+    );
   }
 }
 

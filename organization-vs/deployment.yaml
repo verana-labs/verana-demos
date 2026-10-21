@@ -7,7 +7,7 @@
 # the ECS Ecosystem agent of the network).
 # Example: vs/devnet-example → __NETWORK__=devnet, __VS_NAME__=example
 chartSource: oci://registry-1.docker.io/veranalabs/vs-agent-chart
-chartVersion: v2.0.0-dev.91
+chartVersion: v2.0.0-dev.97
 
 global:
   domain: __VS_NAME__.demos.__NETWORK__.verana.network

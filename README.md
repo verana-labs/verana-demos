@@ -1,6 +1,6 @@
 # Verana Demos
 
-Demo ecosystem with five Verifiable Services and an interactive playground, deployed via GitHub Actions to Kubernetes. Targets **Verana v4** implementation, currently on devnet. It runs vs-agent `v2.0.0-dev.91` against `veranad v0.10.6`.
+Demo ecosystem with five Verifiable Services and an interactive playground, deployed via GitHub Actions to Kubernetes. Targets **Verana v4** implementation, currently on devnet. It runs vs-agent `v2.0.0-dev.97` against `veranad v0.10.6`.
 
 ## Architecture
 

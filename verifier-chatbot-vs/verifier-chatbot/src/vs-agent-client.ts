@@ -45,6 +45,14 @@ export interface CreatePresentationRequestResponse {
   shortUrl?: string;
 }
 
+export interface CreateInvitationResponse {
+  /** The invitation record. The connection it produces carries it as `invitationId`. */
+  id: string;
+  invitation: Record<string, unknown>;
+  /** A URL under the public API of the agent that resolves to the invitation, for a QR code. */
+  shortUrl: string;
+}
+
 export class VsAgentClient {
   private baseUrl: string;
 
@@ -108,6 +116,23 @@ export class VsAgentClient {
       "POST",
       "/v2/didcomm/presentation-request",
       params
+    );
+  }
+
+  /**
+   * Create a standalone connection invitation, with no credential offer or
+   * presentation request in it. It is single-use. A wallet that already holds
+   * a connection to the agent reuses that connection instead of opening a new
+   * one, and the agent reports it with `didcomm.invitations.state-updated`.
+   *
+   * The agent mints a DIDComm v2 invitation when didcommVersion is absent. The
+   * holder wallet (Hologram) speaks DIDComm v1, so the chatbot asks for v1.
+   */
+  async createInvitation(): Promise<CreateInvitationResponse> {
+    return this.request<CreateInvitationResponse>(
+      "POST",
+      "/v2/didcomm/invitations",
+      { didcommVersion: "v1" }
     );
   }
 
